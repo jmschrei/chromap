@@ -93,21 +93,25 @@ assert those counters only on runs pinned to `threads=1`.
 
 ### Checked configurations
 
-At chromap 949043c on Linux x86-64: g++ 13.3 (the Makefile's flags) at
-`CHROMAP_TEST_THREADS` 1 and 4, also with `LC_ALL=C` and under CPU
-contention (8 cores shared with 16 busy processes); g++ 11.5; clang++ 18.1
-with LLVM's libomp (conda-forge, against the system libstdc++, see above) at
-1 and 4 threads; Python 3.8.20 and 3.13 with pytest 8.3; with and without
-samtools and pysam (their two tests skip without them); `CHROMAP_BIN` set
-and unset. The harness and pilot tests also ran on Python 3.14. macOS was not
-run.
+The whole suite at chromap 949043c on Linux x86-64, all with `LC_ALL=C`:
+g++ 13.3 (the Makefile's flags) at `CHROMAP_TEST_THREADS` 1 and 4 (three
+runs at 4, one of them under CPU contention: 8 cores shared with 16 busy
+processes); g++ 11.5 at 4; clang++ 18.1 with LLVM's libomp (conda-forge,
+against the system libstdc++, see above) at 1 and 4; Python 3.8.20 (pytest
+8.3.5, without pysam: its test skips) and 3.13 at 4; `CHROMAP_BIN` pointing at
+a binary built once with `make`, as the search's gate runs it, at 4. The
+harness and pilot tests also ran on Python 3.14 and without samtools and
+pysam. macOS was not run.
 
 ## Runtime and memory
 
-The whole suite (about 430 tests) takes about 50 s at
-`CHROMAP_TEST_THREADS=1` and at 4 with a warm build cache, about 13 s of it
-the four `lowmem` tests; a cold cache adds about 25 s of compiling at the
-default 4 build jobs. Areas C and D alone (232 tests) take about 22 s.
+The whole suite (432 tests) took 85 to 96 s at `CHROMAP_TEST_THREADS=1`
+and at 4 with a warm build cache on a shared 256-core server under other
+load (the same suite before the area A/B review took 74 s under that load
+and 47 s on a quieter machine); about 13 s of it are the four `lowmem` tests
+and about 5 s the three cache runs of `test_b_cache.py`. A cold cache adds
+about 25 s of compiling at the default 4 build jobs. Areas C and D alone
+(232 tests) take about 22 s.
 Costs at 949043c that shape how tests are written:
 
 | Step | Wall time | Peak memory |
@@ -117,6 +121,7 @@ Costs at 949043c that shape how tests are written:
 | a paired-end mapping run | ~0.5 s | ~2.0 GB |
 | `--low-mem` with SAM, pairs or PAF output (also `--preset hic`) | ~0.8 s | ~3 GB |
 | `--low-mem` with BED or TagAlign output (also `--preset atac`, `--preset chip`) | ~3 s | ~12 GB |
+| 510,000 reads or pairs (two batches, so the candidate cache is used; `test_b_cache.py`) | 1-3 s | up to ~2 GB |
 | one C++ driver call | milliseconds | small |
 
 Most of the fixed cost of a mapping run is chromap allocating its candidate
@@ -136,6 +141,27 @@ reads.
 Keep pytest's base temporary directory on a local disk (the default,
 `/tmp/pytest-of-$USER`); chromap runs in its run directory.
 
+## Coverage
+
+Line coverage of `src/` (the vendored `cxxopts.hpp`, `khash.h` and `kseq.h`
+excluded) with the whole suite at chromap 949043c, g++ 13 `--coverage` at
+`-O0` for the binary and the drivers, a line counted once over template
+instances (gcovr `--merge-lines`): 87.9% (5788 of 6585 lines; 93.0% without
+`ksw.cc`, mostly klib functions chromap never calls); functions 88.0%,
+branches 59.2%. The command-line tests alone cover 74.8% of those lines,
+the C++ drivers alone 53.9%. Public names no test reaches:
+`GetLongestMatchLength` (split alignment with more than 200 candidates),
+`AdjustGapBeginning` (an alignment starting with a gap), and code chromap
+never calls: `BandedTracebackToEnd`, `mm_cache::DirectUpdateWeight`,
+`mm_cache::GetMemoryBytes`, `GetByteSize` of `SAMMapping`, `PAFMapping` and
+`PairedPAFMapping`, `Chromap::PairedEndReadWithBarcodeIsDuplicate`,
+`Chromap::UpdateBarcodeAbundance` and `AddPeakOptions`. To measure it, build
+chromap with `make CXXFLAGS="-std=c++11 -O0 -fopenmp -msse4.1 --coverage"
+LDFLAGS="-lm -lz --coverage"`, run the suite with `CHROMAP_BIN` at that
+binary and the same values in `CHROMAP_TEST_CXXFLAGS` and
+`CHROMAP_TEST_LDFLAGS`, and set `GCOV_PREFIX` so the drivers' data, compiled
+in temporary directories, can be paired with their `.gcno` files afterwards.
+
 ## Known bugs are kept out of the suite
 
 Every test asserts behaviour that follows from the simulated truth, from
@@ -150,7 +176,7 @@ TARGETS.md names each kept-out case in its row. At this writing:
 | Area | Notes |
 |---|---|
 | A | a-sam-fasta-reads, a-truncated-gzip-input, a-lowercase-read-sam-nm-md, a-mapping-statistics-clang-threads |
-| B | b-contig-end-reads, b-error-threshold-16, b-error-threshold-shortcut |
+| B | b-contig-end-reads, b-error-threshold-16, b-error-threshold-shortcut, r1-single-end-drop-repetitive-reads |
 | C | paired-paf-coordinates, low-mem-dedup-representative, c-bulk-level-dedup-in-memory, c-low-mem-bulk-dedup-summary, c-low-mem-bulk-dedup-without-whitelist, c-allocate-without-multimappers, c-single-end-tn5-dedup-order, c-summary-duplicate-cap, c-sam-single-end-bulk-dedup, c-paf-residue-matches, r2-bulk-dedup-barcode-count |
 | D | single-end-chr-order, d-read-format-strand-on-reads, d-bc-threshold2-n, d-option-file-handling, d-mapq-threshold-300, d-version-stdout, d-feature-matrix |
 
@@ -356,8 +382,11 @@ Observed at 949043c; the line numbers move, the behaviour should not.
   Multimappers' locations come from a generator seeded with 11 per read
   (single-end) or per task copy (paired-end), so they do not depend on `-t`.
 - **Batches and the cache.** Reads are mapped in batches of 500,000; the
-  candidate cache (`mm_cache`) is updated only after a batch, so no suite-sized
-  run ever hits it and the summary's `cachehit`/`numcacheslots` are 0.
+  candidate cache (`mm_cache`) is updated only after a batch, so a run of
+  fewer reads never hits it and its summary's `cachehit`, `fric`, `estfrip`
+  and `numcacheslots` are 0. Only `test_b_cache.py` maps more than one batch
+  (510,000 reads or pairs), to check that reads answered from the cache map
+  as they do without it.
 - **Seeds.** A read maps only with at least `-s` (2) matching minimizers
   (k 17, w 7: about 2 per 8 bases). A 50 bp read has 34 17-mers; a
   substitution destroys the 17 that cover it. Place substitutions near the
