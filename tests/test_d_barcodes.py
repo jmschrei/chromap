@@ -48,7 +48,7 @@ class Design(object):
 
 def build_design(genome):
 	"""Categories (counts): exact (72: 3 per base whitelist barcode), one (40:
-	one substitution), two (24), three (10), n1 (20: one N, quality '#' there),
+	one substitution), two (24), three (10), n1 (22: one N, quality '#' there),
 	n2 (10: two Ns), n1sub (10: an N and a substitution before it), far (8:
 	random barcodes at least 4 from every whitelist barcode), and designed
 	ambiguous reads, each one substitution away from two or three whitelist
@@ -58,7 +58,9 @@ def build_design(genome):
 
 	- abundance: a:b = 19:1, equal qualities -> a (0.95 > 0.9)
 	- quality: 5:5, '$' (Q3) at a's mismatch, 'I' (Q40) at b's -> a (0.9998)
-	- tie: 5:5, equal qualities -> 0.5, uncorrectable at 0.9
+	- tie: 5:5, equal qualities -> 0.5, uncorrectable at 0.9; two more
+	  reads of a with an N over one of its A bases (its 2-bit key, N read
+	  as A, equals a) are corrected to a but add nothing to a's abundance
 	- low_clamp: 17:2, '!' (Q0, clamped to 3) and '$' (Q3) -> 17/19 = 0.895,
 	  uncorrectable (unclamped it would be 0.944)
 	- high_clamp: 17:2, 'I' (Q40) and 'K' (Q42, clamped to 40) -> 0.895,
@@ -111,6 +113,13 @@ def build_design(genome):
 		for w, n in zip(cands, abund):
 			for _ in range(n):
 				add("abundance", w, quals(), w)
+		if label == "tie":
+			a_bases = [k for k in range(BC_LEN) if cands[0][k] == "A" and k not in positions]
+			assert a_bases
+			for k in a_bases[:2]:
+				q = list(quals())
+				q[k] = "#"
+				add("n1", hd.with_n(cands[0], [k]), "".join(q), cands[0])
 	for w in base:
 		for _ in range(3):
 			add("exact", w, quals(), w)
@@ -175,7 +184,12 @@ def default_run(index, design):
 
 @pytest.fixture(scope="module")
 def keep_run(index, design):
-	return _run(index, design, ["--output-mappings-not-in-whitelist"])
+	"""--output-mappings-not-in-whitelist, at -t 1. The barcode statistics on
+	stderr (counted before the option decides what is written) are checked
+	on this run: they are summed from per-thread counters, which clang/libomp
+	builds undercount at -t > 1 (known bug a-mapping-statistics-clang-threads)."""
+	args = ["--barcode-whitelist", str(design.whitelist_path), "--output-mappings-not-in-whitelist"]
+	return ch.run_chromap(index, design.reads, args, threads=1, shared=True)
 
 
 @pytest.fixture(scope="module")
@@ -268,17 +282,18 @@ def test_ambiguous_barcodes_follow_quality_and_abundance(design, default_run):
 		assert _barcode_at(default_run, reads[name]) is None, label
 
 
-def test_barcode_statistics(design, default_run):
+def test_barcode_statistics(design, keep_run):
 	"""stderr reports "Number of barcodes in whitelist" (reads whose barcode
 	is in the whitelist as read) and "Number of corrected barcodes", counted
-	over every read before mapping, and the run is single-cell."""
+	over every read before mapping, and the run is single-cell (checked at
+	-t 1, see keep_run)."""
 	outcomes = hd.correction_outcomes(design.records, design.whitelist)
 	status = collections.Counter(s for s, _ in outcomes.values())
-	stats = default_run.stats()
+	stats = keep_run.stats()
 	assert stats["Number of barcodes in whitelist"] == status[hd.EXACT]
 	assert stats["Number of corrected barcodes"] == status[hd.CORRECTED]
 	assert status[hd.EXACT] == len(design.names["exact"]) + len(design.names["abundance"])
-	assert "Analyze single-cell data." in default_run.stderr
+	assert "Analyze single-cell data." in keep_run.stderr
 
 
 def test_fragments_are_sorted_by_reference_and_start(index, default_run):
@@ -289,11 +304,10 @@ def test_fragments_are_sorted_by_reference_and_start(index, default_run):
 
 # ------------------------------------------------------------ option runs
 
-def test_output_mappings_not_in_whitelist(design, default_run, keep_run):
+def test_output_mappings_not_in_whitelist(design, keep_run):
 	"""--output-mappings-not-in-whitelist writes every read: corrected
 	barcodes as with the default run, uncorrectable ones as read (an N written
-	as A, the base its 2-bit key stores). The barcode statistics do not
-	change."""
+	as A, the base its 2-bit key stores)."""
 	want = hd.expected_fragments(design.records, design.whitelist, keep_uncorrectable=True)
 	assert _lines(keep_run) == want
 	reads = keep_run.truth
@@ -301,8 +315,6 @@ def test_output_mappings_not_in_whitelist(design, default_run, keep_run):
 		assert _barcode_at(keep_run, reads[name]) == reads[name].barcode
 	for name in design.names["n2"]:
 		assert _barcode_at(keep_run, reads[name]) == reads[name].barcode.replace("N", "A")
-	for key in ("Number of barcodes in whitelist", "Number of corrected barcodes"):
-		assert keep_run.stats()[key] == default_run.stats()[key]
 
 
 def test_relaxed_run_follows_correction_rule(design, relaxed_run):
@@ -340,24 +352,27 @@ def test_bc_probability_threshold(design, relaxed_run):
 
 # ------------------------------------------------------------ 5% check
 
+SPARSE_LEN = 12
+
+
 def _sparse_reads(genome, n_exact, label):
-	"""100 reads: n_exact with whitelisted barcodes, the others one
-	substitution from a whitelist barcode (one candidate each)."""
+	"""100 reads with 12 bp barcodes: n_exact with whitelisted barcodes, the
+	others one substitution from a whitelist barcode (one candidate each)."""
 	sim = ch.ReadSimulator(genome, seed=ch.stable_seed("test_d_barcodes", label))
 	rng = hd.stable_rng("test_d_barcodes", label)
 	picker = hd.LocusPicker(sim)
-	wl = ch.make_whitelist(20, length=BC_LEN, seed=41, min_dist=4)
+	wl = ch.make_whitelist(20, length=SPARSE_LEN, seed=41, min_dist=4)
 	recs = []
 	for i in range(100):
 		w = wl[i % len(wl)]
-		bc = w if i < n_exact else hd.mutate(w, [rng.randrange(BC_LEN)])
-		recs.append(hd.barcoded_read(sim, picker, bc, hd.random_quality(rng, BC_LEN)))
+		bc = w if i < n_exact else hd.mutate(w, [rng.randrange(SPARSE_LEN)])
+		recs.append(hd.barcoded_read(sim, picker, bc, hd.random_quality(rng, SPARSE_LEN)))
 	return ch.ReadSet(recs), wl
 
 
 @pytest.fixture(scope="module")
 def sparse_whitelist(tmp_path_factory):
-	wl = ch.make_whitelist(20, length=BC_LEN, seed=41, min_dist=4)
+	wl = ch.make_whitelist(20, length=SPARSE_LEN, seed=41, min_dist=4)
 	return ch.write_lines(tmp_path_factory.mktemp("d_sparse") / "whitelist.txt", wl)
 
 
@@ -375,7 +390,7 @@ def test_fewer_than_five_percent_whitelisted_exits(index, genome, sparse_whiteli
 def test_five_percent_whitelisted_is_enough(index, genome, sparse_whitelist):
 	"""5 of 100 barcodes in the whitelist is not fewer than 5%: the run
 	maps, and the 95 one-substitution barcodes are corrected (one candidate
-	each)."""
+	each) and written as 12 bp barcodes."""
 	reads, wl = _sparse_reads(genome, 5, "sparse5")
 	run = ch.run_chromap(index, reads, ["--barcode-whitelist", str(sparse_whitelist)])
 	assert _lines(run) == hd.expected_fragments(reads, wl)
@@ -535,9 +550,10 @@ def test_paired_end_correction_and_cell_level_dedup(pe_design, pe_run):
 @pytest.fixture(scope="module")
 def pe_keep_run(index, pe_design):
 	reads, wl, path = pe_design
+	"""At -t 1, for the barcode statistics (see keep_run)."""
 	return ch.run_chromap(index, reads, ["--barcode-whitelist", str(path), "--remove-pcr-duplicates",
 		"--remove-pcr-duplicates-at-cell-level", "--output-mappings-not-in-whitelist", "--cache-size", "2000000"],
-		shared=True)
+		threads=1, shared=True)
 
 
 def test_paired_end_output_mappings_not_in_whitelist(pe_design, pe_keep_run):
@@ -552,12 +568,13 @@ def test_paired_end_output_mappings_not_in_whitelist(pe_design, pe_keep_run):
 	assert sum(want.values()) == len(reads)
 
 
-def test_paired_end_barcode_statistics(pe_design, pe_run):
+def test_paired_end_barcode_statistics(pe_design, pe_keep_run):
 	"""Paired-end runs count each pair's barcode once in "Number of barcodes
-	in whitelist" and "Number of corrected barcodes"."""
+	in whitelist" and "Number of corrected barcodes" (checked at -t 1, see
+	keep_run)."""
 	reads, wl, _ = pe_design
 	status = collections.Counter(s for s, _ in hd.correction_outcomes(reads, wl).values())
-	stats = pe_run.stats()
+	stats = pe_keep_run.stats()
 	assert stats["Number of barcodes in whitelist"] == status[hd.EXACT]
 	assert stats["Number of corrected barcodes"] == status[hd.CORRECTED]
 

@@ -254,10 +254,11 @@ def test_feature_matrix_peaks_hand_worked(cpp, matrix_fasta, tmp_path):
 def test_feature_matrix_matches_reference(cpp, matrix_fasta, tmp_path, cell_by_bin, bin_size, overlap, depth):
 	"""FeatureBarcodeMatrix::OutputFeatureMatrix writes the peaks (or bins),
 	barcodes and matrix reference_feature_matrix computes, for the hand-made
-	fragments plus 120 random ones (lengths 30-300, away from contig ends).
-	With bins, fragments on the first reference cover up to three bins;
-	fragments on the others stay within one bin (see the known bug
-	d-cell-by-bin-later-contigs)."""
+	fragments plus 120 random ones (lengths 30-300, ending at least 10 bases
+	before their contig's end, so no coverage run reaches it). With bins,
+	fragments on the first reference cover up to three bins; fragments on
+	the others stay within one bin. (Both restrictions avoid the known bug
+	d-feature-matrix.)"""
 	rng = random.Random(ch.stable_seed("test_d_unit", "matrix", cell_by_bin, bin_size))
 	frags = list(HAND_FRAGMENTS)
 	for i in range(120):

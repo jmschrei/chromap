@@ -58,10 +58,11 @@ def ordered_run(index, hic, order_files):
 
 @pytest.fixture(scope="module")
 def natural_run(index, hic, order_files):
-	"""The hic preset's mapping in memory with both order files."""
+	"""The hic preset's mapping in memory with both order files; read names
+	end in /1 and /2."""
 	return ch.run_chromap(index, hic, ["--split-alignment", "-e", "4", "-q", "1", "--pairs",
 		"--chr-order", str(order_files["partial"]), "--pairs-natural-chr-order", str(order_files["natural"]),
-		"--cache-size", "2000000"], output="out.pairs", shared=True)
+		"--cache-size", "2000000"], output="out.pairs", name_style="slash", shared=True)
 
 
 def _header_and_records(run):
@@ -85,9 +86,12 @@ def _sam_mapq(run):
 	return dict(((s.qname, s.is_read1), s.mapq) for s in sam if not s.is_secondary)
 
 
-def _check_records(recs, reads, flip_order, sort_order):
+def _check_records(recs, reads, flip_order, sort_order, suffix=""):
 	rank = dict((c, i) for i, c in enumerate(flip_order))
-	want = collections.Counter(hd.expected_pairs_record(p, rank) for p in reads)
+	want = collections.Counter()
+	for p in reads:
+		r = hd.expected_pairs_record(p, rank)
+		want[(r[0] + suffix,) + r[1:]] += 1
 	got = collections.Counter(tuple(r[:7]) for r in recs)
 	assert got == want
 	assert set(r.pair_type for r in recs) == {"UU"}
@@ -152,9 +156,10 @@ def test_hic_sam_with_chr_order(genome, hic, hic_sam_run):
 	assert keys == sorted(keys)
 
 
-def _check_mapq(recs, sam_mapq):
+def _check_mapq(recs, sam_mapq, suffix=""):
 	for r in recs:
-		assert (r.mapq1, r.mapq2) == (sam_mapq[(r.read_id, True)], sam_mapq[(r.read_id, False)]), r
+		name = r.read_id[:len(r.read_id) - len(suffix)]
+		assert (r.mapq1, r.mapq2) == (sam_mapq[(name, True)], sam_mapq[(name, False)]), r
 
 
 def test_pairs_with_chr_order(genome, hic, ordered_run, hic_sam_run):
@@ -174,11 +179,12 @@ def test_pairs_with_chr_order(genome, hic, ordered_run, hic_sam_run):
 def test_pairs_natural_chr_order(genome, hic, natural_run, hic_sam_run):
 	"""--pairs-natural-chr-order chr2, chrX, chr1, chr3 flips the pairs and
 	orders the #chromsize lines; the records stay sorted by the --chr-order
-	order (chrX, chr3, chr1, chr2) of chrom1, then chrom2, pos1, pos2."""
+	order (chrX, chr3, chr1, chr2) of chrom1, then chrom2, pos1, pos2. With
+	mate names ending in /1 and /2 the readID is read 1's name, /1 kept."""
 	header, recs = _header_and_records(natural_run)
 	assert header == _expected_header(genome, NATURAL_ORDER)
-	_check_records(recs, hic, NATURAL_ORDER, hd.full_order(PARTIAL_ORDER, genome.names))
-	_check_mapq(recs, _sam_mapq(hic_sam_run))
+	_check_records(recs, hic, NATURAL_ORDER, hd.full_order(PARTIAL_ORDER, genome.names), suffix="/1")
+	_check_mapq(recs, _sam_mapq(hic_sam_run), suffix="/1")
 
 
 @pytest.mark.parametrize("args", ["--pairs", "--preset hic"])
