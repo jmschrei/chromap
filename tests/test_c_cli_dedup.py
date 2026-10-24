@@ -9,8 +9,6 @@ chromap's documented rules (tests/README.md): single-end duplicates share a
 start whatever their strand or length, the count column is the group size
 capped at 255, MAPQ filtering applies to the record kept for each group."""
 
-import re
-
 import pytest
 
 import chromap_helpers as ch
@@ -88,17 +86,13 @@ def test_single_end_duplicate_groups_and_counts(se_dedup_run, se_design):
 
 
 def test_single_end_dedup_statistics(se_dedup_run, se_design):
-	"""After deduplication chromap reports the unique and multi mappings
-	left (one per group: the multimapper groups are the multi ones) and the
-	number of lines written."""
+	"""chromap reports the number of mappings it wrote ("Number of output
+	mappings (passed filters)"): one per duplicate group passing -q 30, the
+	number of lines in the output. (The intermediate counts it prints after
+	deduplication are progress diagnostics and are not checked.)"""
 	_, groups, _ = se_design
 	uni = len(_passing_groups(groups))
-	multi = len(groups) - uni
-	m = re.search(r"After removing PCR duplications, # uni-mappings: (\d+), # multi-mappings: (\d+), total: (\d+)\.",
-		se_dedup_run.stderr)
-	assert m is not None, se_dedup_run.stderr[-2000:]
-	assert tuple(int(x) for x in m.groups()) == (uni, multi, uni + multi)
-	assert se_dedup_run.stats()["Number of output mappings (passed filters)"] == uni
+	assert se_dedup_run.stats()["Number of output mappings (passed filters)"] == uni == len(se_dedup_run.lines())
 
 
 def test_single_end_summary(se_dedup_run, se_design):

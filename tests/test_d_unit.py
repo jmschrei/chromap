@@ -67,10 +67,12 @@ def test_read_format_ranges_hand_worked(cpp, tmp_path):
 	concatenated in order, and "-" reverse-complementing the sequence (N stays
 	N) while reversing the quality string:
 	ACGTNACGTT with bc:0:2 + bc:7:-1 is ACG + GTT = ACGGTT; with bc:2:5:-
-	the range GTNA becomes TNAC and its qualities 2345 become 5432."""
+	the range GTNA becomes TNAC and its qualities 2345 become 5432; with
+	bc:0:-1:- the whole read becomes AACGTNACGT, qualities 9876543210."""
 	recs = [("ACGTNACGTT", "0123456789")]
 	assert _effective_range(cpp, tmp_path, recs, ["bc:0:2", "bc:7:-1"]) == [("ACGGTT", "012789")]
 	assert _effective_range(cpp, tmp_path, recs, ["bc:2:5:-"]) == [("TNAC", "5432")]
+	assert _effective_range(cpp, tmp_path, recs, ["bc:0:-1:-"]) == [("AACGTNACGT", "9876543210")]
 	assert _effective_range(cpp, tmp_path, recs, ["r1:0:-1:+"]) == [recs[0]]
 	assert _effective_range(cpp, tmp_path, recs, []) == [recs[0]]
 

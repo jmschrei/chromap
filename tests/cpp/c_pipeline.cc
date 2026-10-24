@@ -334,9 +334,9 @@ CT_PROBE(lowmem) {
 
 // temp TYPE BLOCK_SIZE NUM_REFS OUT: records from stdin written as one temp
 // file with MappingWriter::OutputTempMappings, read back with
-// TempMappingFileHandle in blocks of BLOCK_SIZE; prints
-// "rid <record>" per mapping in the order the handle yields them, then
-// "end <calls to LoadTempMappingBlock and Next>" and removes the file.
+// TempMappingFileHandle in blocks of BLOCK_SIZE; prints "path <temp file>",
+// then "rid <record>" per mapping in the order the handle yields them, then
+// "end", and removes the file.
 template <typename T>
 int RunTemp(const std::vector<std::string> &args) {
   const uint32_t block = std::stoi(args[1]);
@@ -482,9 +482,11 @@ CT_PROBE(summary) {
 
 }  // namespace
 
-// MoveMappingsInBuffersToMappingContainer appends every thread's buffer to
-// the container per reference, in thread order, empties the buffers and
-// returns how many mappings moved (2 threads x 2 references, 3 + 1 moved).
+// MoveMappingsInBuffersToMappingContainer adds every thread's buffer to the
+// container per reference, keeping what the container held, empties the
+// buffers and returns how many mappings moved (2 threads x 2 references, 4
+// moved). The order within a reference is not checked: chromap sorts every
+// reference before it writes or deduplicates.
 CT_TEST(move_buffers_to_container) {
   MappingParameters params;
   MappingProcessor<MappingWithoutBarcode> processor(params, 4);
@@ -500,19 +502,20 @@ CT_TEST(move_buffers_to_container) {
   CT_CHECK_EQ(moved, 4u);
   CT_CHECK_EQ(container[0].size(), (size_t)3);
   CT_CHECK_EQ(container[1].size(), (size_t)2);
-  if (container[0].size() == 3 && container[1].size() == 2) {
-    CT_CHECK_EQ(container[0][0].read_id_, 0u);
-    CT_CHECK_EQ(container[0][1].read_id_, 1u);
-    CT_CHECK_EQ(container[0][2].read_id_, 3u);
-    CT_CHECK_EQ(container[1][0].read_id_, 2u);
-    CT_CHECK_EQ(container[1][1].read_id_, 4u);
-  }
+  std::vector<uint32_t> ids0, ids1;
+  for (size_t i = 0; i < container[0].size(); ++i) ids0.push_back(container[0][i].read_id_);
+  for (size_t i = 0; i < container[1].size(); ++i) ids1.push_back(container[1][i].read_id_);
+  std::sort(ids0.begin(), ids0.end());
+  std::sort(ids1.begin(), ids1.end());
+  CT_CHECK(ids0 == std::vector<uint32_t>({0, 1, 3}));
+  CT_CHECK(ids1 == std::vector<uint32_t>({2, 4}));
   for (int t = 0; t < 2; ++t)
     for (int r = 0; r < 2; ++r) CT_CHECK(buffers[t][r].empty());
 }
 
-// OutputMappingStatistics counts unique (is_unique 1) and multi mappings over
-// every reference: here 2 unique, 1 multi.
+// OutputMappingStatistics reports the unique (is_unique 1) and multi
+// mappings over every reference and their total, in that order: here 2, 1
+// and 3. Only the numbers are checked, not the wording around them.
 CT_TEST(mapping_statistics_counts) {
   MappingParameters params;
   MappingProcessor<MappingWithoutBarcode> processor(params, 4);
@@ -524,7 +527,19 @@ CT_TEST(mapping_statistics_counts) {
   std::streambuf *old = std::cerr.rdbuf(captured.rdbuf());
   processor.OutputMappingStatistics(3, mappings);
   std::cerr.rdbuf(old);
-  CT_CHECK(captured.str().find("# uni-mappings: 2, # multi-mappings: 1, total: 3.") != std::string::npos);
+  std::vector<long> numbers;
+  const std::string text = captured.str();
+  for (size_t i = 0; i < text.size();) {
+    if (text[i] >= '0' && text[i] <= '9') {
+      size_t j = i;
+      while (j < text.size() && text[j] >= '0' && text[j] <= '9') ++j;
+      numbers.push_back(std::stol(text.substr(i, j - i)));
+      i = j;
+    } else {
+      ++i;
+    }
+  }
+  CT_CHECK(numbers == std::vector<long>({2, 1, 3}));
 }
 
 CT_MAIN

@@ -558,7 +558,7 @@ def non_whitelisted_barcode(whitelist, seed, min_dist=3):
 			return b
 
 
-def barcoded_pair_design(genome, seed, whitelist):
+def barcoded_pair_design(genome, seed, whitelist, tie_breaks=False):
 	"""Barcoded read pairs (whitelisted barcodes unless stated):
 	- four fragments, each read three times with whitelist[0], once with
 	  whitelist[1] and twice with whitelist[2] (read 1's strand alternating
@@ -567,10 +567,16 @@ def barcoded_pair_design(genome, seed, whitelist):
 	- one pair whose barcode is three or more mismatches from every
 	  whitelisted barcode (dropped, counted as non-whitelist);
 	- one pair inside rep8 with whitelist[8] (MAPQ below 30) and one random
-	  pair with whitelist[9] (unmapped).
-	Returns (ReadSet, fragment groups (all six pairs of a fragment),
-	singleton groups, the non-whitelisted pair, the repeat pair, the
-	unmapped pair)."""
+	  pair with whitelist[9] (unmapped);
+	- with tie_breaks, two more fragment groups for bulk-level duplicate
+	  removal (appended to the fragment groups, kinds "most_pairs" and
+	  "abundance_tie"): a fragment read twice with whitelist[10] and once
+	  with the more abundant whitelist[0], and a fragment read once with a
+	  barcode used nowhere else and once with whichever of whitelist[0] and
+	  whitelist[2] has the larger 2-bit key (more abundant, and later in
+	  chromap's barcode order).
+	Returns (ReadSet, fragment groups (all pairs of a fragment), singleton
+	groups, the non-whitelisted pair, the repeat pair, the unmapped pair)."""
 	sim = ch.ReadSimulator(genome, seed=seed)
 	fragments = []
 	for i in range(4):
@@ -585,5 +591,16 @@ def barcoded_pair_design(genome, seed, whitelist):
 	bad = sim.pair(contig, start, 250, barcode=non_whitelisted_barcode(whitelist, seed))
 	rep = repeat_pair(sim, 90, barcode=whitelist[8])
 	unm = random_pair(sim, barcode=whitelist[9])
+	if tie_breaks:
+		contig, start = sim.unique_locus(260)
+		members = [sim.pair(contig, start, 260, barcode=whitelist[10]) for _ in range(2)]
+		members.append(sim.pair(contig, start, 260, barcode=whitelist[0]))
+		fragments.append(Group("most_pairs", members))
+		heavy = max((whitelist[0], whitelist[2]), key=ch.encode_seed)
+		light = min(whitelist[11:], key=ch.encode_seed)
+		if ch.encode_seed(light) > ch.encode_seed(heavy):
+			raise ValueError("no unused whitelist barcode sorts before %s" % heavy)
+		contig, start = sim.unique_locus(270)
+		fragments.append(Group("abundance_tie", [sim.pair(contig, start, 270, barcode=b) for b in (light, heavy)]))
 	reads = [p for g in fragments + singles for p in g.reads] + [bad, rep, unm]
 	return sim.shuffled(ch.ReadSet(reads)), fragments, singles, bad, rep, unm

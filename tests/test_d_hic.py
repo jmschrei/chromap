@@ -122,11 +122,14 @@ def test_pairs_records_from_truth(genome, hic, pairs_run):
 
 
 def test_pairs_mapq_columns(hic, pairs_run, hic_sam_run):
-	"""mapq1 and mapq2 are the MAPQ chromap gives the pair, which it also
-	writes for both mates in SAM: for every pair, mapq1 and mapq2 equal the
+	"""mapq1 and mapq2 carry the pair's MAPQ (chromap writes the pair's
+	MAPQ in both columns). Every simulated mate maps uniquely, so here the
+	pair's MAPQ equals each mate's: for every pair, mapq1 and mapq2 equal the
 	SAM MAPQ of read 1 and read 2 from --preset hic --SAM on the same reads
 	(the reference order does not change a MAPQ), and every pair passes the
-	preset's -q 1."""
+	preset's -q 1. Pairs whose mates differ in MAPQ are not tested: the 4DN
+	format defines mapq1 and mapq2 per side, chromap writes the pair's
+	value."""
 	_, recs = _header_and_records(pairs_run)
 	sam_mapq = _sam_mapq(hic_sam_run)
 	assert len(sam_mapq) == 2 * len(hic)

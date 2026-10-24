@@ -137,6 +137,19 @@ CT_TEST(paired_end_record_order_and_duplicates) {
   CT_CHECK_EQ(a.GetEndPosition(), 1300u);
   CT_CHECK(!flipped.IsPositiveStrand());
   CT_CHECK_EQ(a.GetBarcode(), (uint64_t)0);
+  // Tn5 on a fragment whatever read 1's strand: [1000, 1300) -> [1004,
+  // 1295); the + read (50) loses 4 bases at its start, the - read (50) 5 at
+  // its end.
+  a.Tn5Shift();
+  flipped.Tn5Shift();
+  CT_CHECK_EQ(a.GetStartPosition(), 1004u);
+  CT_CHECK_EQ(a.GetEndPosition(), 1295u);
+  CT_CHECK_EQ(a.positive_alignment_length_, (uint16_t)46);
+  CT_CHECK_EQ(a.negative_alignment_length_, (uint16_t)45);
+  CT_CHECK_EQ(flipped.GetStartPosition(), 1004u);
+  CT_CHECK_EQ(flipped.GetEndPosition(), 1295u);
+  CT_CHECK_EQ(flipped.positive_alignment_length_, (uint16_t)44);
+  CT_CHECK_EQ(flipped.negative_alignment_length_, (uint16_t)45);
 }
 
 // Barcoded fragments: cell-level duplicates need barcode, start and length;

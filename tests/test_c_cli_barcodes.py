@@ -10,6 +10,8 @@ six times with three whitelisted barcodes (3, 1 and 2 pairs) and adds
 singletons, a pair with a barcode far from the whitelist, a repeat pair and
 a random pair, so every expected line and count follows from the design."""
 
+import collections
+
 import pytest
 
 import chromap_helpers as ch
@@ -18,7 +20,8 @@ import helpers_c as hc
 
 @pytest.fixture(scope="module")
 def bc_design(genome, whitelist):
-	return hc.barcoded_pair_design(genome, ch.stable_seed("test_c_cli_barcodes", "design"), whitelist[0])
+	return hc.barcoded_pair_design(genome, ch.stable_seed("test_c_cli_barcodes", "design"), whitelist[0],
+		tie_breaks=True)
 
 
 @pytest.fixture(scope="module")
@@ -85,17 +88,30 @@ def test_cell_level_summary_per_barcode(cell_level_run, bc_design):
 @pytest.mark.lowmem
 def test_low_mem_bulk_level_dedup_with_tn5(index, bc_design, whitelist):
 	"""--low-mem with --remove-pcr-duplicates on single-cell data removes
-	duplicates at bulk level (the default): the six pairs of a fragment
-	collapse into one line carrying the barcode with the most pairs (3 of
-	6) and the whole group's count, 6. --Tn5-shift moves every fragment's
-	start right by 4 and its end left by 5."""
+	duplicates at bulk level (the default): the pairs of a fragment collapse
+	into one line with the whole group's count, carrying the barcode with the
+	most pairs in the group, ties broken by the barcode's abundance (its
+	exact matches among the input barcodes; the rule in
+	MappingWriter::FindBestMappingIndexFromDuplicates). The designed
+	fragments cover the most pairs winning over abundance (2 pairs against
+	1) and abundance breaking a tie. chromap counts at most two pairs per
+	barcode here (known bug r2-bulk-dedup-barcode-count), so wherever a
+	barcode has three pairs it is also the most abundant one. --Tn5-shift
+	moves every fragment's start right by 4 and its end left by 5."""
 	reads, fragments, singles, bad, rep, unm = bc_design
 	run = ch.run_chromap(index, reads, ["--remove-pcr-duplicates", "--low-mem", "--Tn5-shift",
 		"--barcode-whitelist", str(whitelist[1])])
+	listed = set(whitelist[0])
+	abundance = collections.Counter(p.barcode for p in reads if p.barcode in listed)
 	want = []
 	for g in fragments:
-		best = max(set(p.barcode for p in g.reads), key=lambda b: sum(p.barcode == b for p in g.reads))
+		pairs = collections.Counter(p.barcode for p in g.reads)
+		rank = dict((b, (pairs[b], abundance[b])) for b in pairs)
+		best = max(pairs, key=rank.get)
+		assert list(rank.values()).count(rank[best]) == 1, g
+		assert best == max(pairs, key=lambda b: (min(pairs[b], 2), abundance[b])), g
 		want.append((g.key, best, g.size))
+	assert set(g.kind for g in fragments) == {"fragment", "most_pairs", "abundance_tie"}
 	for g in singles:
 		want.append((g.key, g.reads[0].barcode, 1))
 	genome = index.genome

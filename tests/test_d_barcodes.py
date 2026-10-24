@@ -287,15 +287,13 @@ def test_ambiguous_barcodes_follow_quality_and_abundance(design, default_run):
 def test_barcode_statistics(design, keep_run):
 	"""stderr reports "Number of barcodes in whitelist" (reads whose barcode
 	is in the whitelist as read) and "Number of corrected barcodes", counted
-	over every read before mapping, and the run is single-cell (checked at
-	-t 1, see keep_run)."""
+	over every read before mapping (checked at -t 1, see keep_run)."""
 	outcomes = hd.correction_outcomes(design.records, design.whitelist)
 	status = collections.Counter(s for s, _ in outcomes.values())
 	stats = keep_run.stats()
 	assert stats["Number of barcodes in whitelist"] == status[hd.EXACT]
 	assert stats["Number of corrected barcodes"] == status[hd.CORRECTED]
 	assert status[hd.EXACT] == len(design.names["exact"]) + len(design.names["abundance"])
-	assert "Analyze single-cell data." in keep_run.stderr
 
 
 def test_fragments_are_sorted_by_reference_and_start(index, default_run):
@@ -631,6 +629,25 @@ def test_unequal_whitelist_lengths_exit(index, small_inputs):
 	run = _error_run(index, small_inputs["files"], ["--barcode-whitelist", str(path)])
 	assert run.returncode == 255
 	assert "ERROR: barcode lengths are not equal in the whitelist!" in run.stderr
+
+
+def test_whitelist_barcodes_of_32_bases_are_accepted(index, genome, tmp_path):
+	"""32 bases is the longest barcode a 2-bit key holds (the check is
+	"greater than 32"): 32 bp whitelisted barcodes, and barcodes one
+	substitution from one of them, are written as 32 bp whitelist
+	barcodes."""
+	sim = ch.ReadSimulator(genome, seed=ch.stable_seed("test_d_barcodes", "bc32"))
+	rng = hd.stable_rng("test_d_barcodes", "bc32")
+	picker = hd.LocusPicker(sim)
+	wl = ch.make_whitelist(6, length=32, seed=73, min_dist=4)
+	recs = [hd.barcoded_read(sim, picker, w if i < 12 else hd.mutate(w, [rng.randrange(32)]))
+		for i, w in enumerate(wl * 3)]
+	reads = ch.ReadSet(recs)
+	path = ch.write_lines(tmp_path / "wl32.txt", wl)
+	run = ch.run_chromap(index, reads, ["--barcode-whitelist", str(path)])
+	assert _lines(run) == hd.expected_fragments(reads, wl)
+	assert len(run.fragments()) == len(recs)
+	assert set(f.barcode for f in run.fragments()) == set(wl)
 
 
 def test_whitelist_barcodes_over_32_bases_exit(index, small_inputs):

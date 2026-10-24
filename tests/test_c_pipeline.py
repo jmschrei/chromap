@@ -177,7 +177,10 @@ def test_writer_formats_and_sort_order(cpp, fasta, tmp_path, kind, fmt):
 	records = format_records(kind, rng)
 	rng.shuffle(records)
 	barcoded = kind in ("seb", "peb", "sam")
-	ops = ["psort:3" if kind in ("se", "pe", "sam") else "sort", "mapq:30"]
+	# ParallelSortOutputMappings on 3 threads, with 0 threads (chromap's
+	# low-memory flush: the caller's threads) and SortOutputMappings.
+	ops = [{"se": "psort:3", "pe": "psort:3", "sam": "psort:3", "seb": "psort:0", "peb": "psort:0",
+		"paf": "psort:0"}.get(kind, "sort"), "mapq:30"]
 	lines = _run_inmemory(cpp, kind, fmt, fasta, tmp_path / "out.txt", records, ops,
 		BC_LEN if barcoded else 0)
 	header = []
@@ -296,14 +299,17 @@ def test_in_memory_deduplication(cpp, fasta, tmp_path, kind):
 		assert counts.count(4) >= 1
 
 
-@pytest.mark.parametrize("kind", ["se", "seb", "pe", "peb", "paf", "ppaf"])
-def test_in_memory_tn5_shift_then_dedup(cpp, fasta, tmp_path, kind):
+@pytest.mark.parametrize("kind,fmt", [("se", "BED"), ("seb", "BED"), ("pe", "BED"), ("peb", "BED"), ("paf", "PAF"),
+	("ppaf", "PAF"), ("pe", "TagAlign"), ("peb", "TagAlign")])
+def test_in_memory_tn5_shift_then_dedup(cpp, fasta, tmp_path, kind, fmt):
 	"""ApplyTn5ShiftOnMappings then RemovePCRDuplicate (chromap's in-memory
 	order): every written interval is shifted (+4 at the start of + records
-	and fragments, -5 at the end of - records and fragments) and duplicate
-	groups keep their counts. The records place no + and - record where
-	shifting would merge or split groups, so the result does not depend on
-	whether the shift comes before or after deduplication."""
+	and fragments, -5 at the end of - records and fragments; in paired
+	TagAlign and PAF lines the + read loses 4 bases at its start and the -
+	read 5 at its end) and duplicate groups keep their counts. The records
+	place no + and - record where shifting would merge or split groups, so
+	the result does not depend on whether the shift comes before or after
+	deduplication."""
 	rng = random.Random(ch.stable_seed("tn5", kind))
 	records = dedup_records(kind, rng)
 	if kind in ("se", "seb", "paf"):
@@ -311,13 +317,13 @@ def test_in_memory_tn5_shift_then_dedup(cpp, fasta, tmp_path, kind):
 		# out (see the known-bug note c-single-end-tn5-dedup-order).
 		records = [r for r in records if not (r["rid"] == 1 and r["start"] == 300)]
 	bc_len = BC_LEN if kind in ("seb", "peb") else 0
-	before = hc.expected_output(records, FORMAT_OF[kind], CONTIGS, tn5=True, dedup=True, mapq_threshold=30,
+	before = hc.expected_output(records, fmt, CONTIGS, tn5=True, dedup=True, mapq_threshold=30,
 		barcode_length=bc_len)
-	after = hc.expected_output(records, FORMAT_OF[kind], CONTIGS, tn5=True, dedup=True, mapq_threshold=30,
+	after = hc.expected_output(records, fmt, CONTIGS, tn5=True, dedup=True, mapq_threshold=30,
 		tn5_before_dedup=False, barcode_length=bc_len)
 	assert [c for c, _ in before] == [c for c, _ in after]
-	lines = _run_inmemory(cpp, kind, FORMAT_OF[kind], fasta, tmp_path / "out.txt", records,
-		["tn5", "dedup:1", "mapq:30"], bc_len)
+	lines = _run_inmemory(cpp, kind, fmt, fasta, tmp_path / "out.txt", records, ["tn5", "dedup:1", "mapq:30"],
+		bc_len)
 	hc.check_output(lines, before)
 
 
@@ -576,6 +582,36 @@ def test_multi_mapping_allocation_seed(cpp, allocation_case):
 	assert agree < 1e-6
 	assert [x for x in a if x[0] not in random_ids] == [x for x in c if x[0] not in random_ids]
 	assert [x for x in a if x[0] in random_ids] != [x for x in c if x[0] in random_ids]
+
+
+@pytest.mark.parametrize("seed", [11, 12345, 987654])
+def test_multi_mapping_allocation_follows_weights(cpp, seed):
+	"""Each multi-read goes to one location drawn with probability
+	proportional to its weight: 400 multi-reads, each with one location
+	under 9 unique mappings and one under 1 (distance 0), should go to the
+	first about 90% of the time (binomial: 360, standard deviation 6). The
+	count must lie in [330, 385] at each seed; a draw that ignored the
+	weights' sizes (uniform among positive weights) would give about 200,
+	one that always took the heaviest 400."""
+	recs = []
+	n = 0
+	for i in range(9):
+		n += 1
+		recs.append(hc.record("se", rid=0, id=n, start=5000 + i, length=50, mapq=60))
+	n += 1
+	recs.append(hc.record("se", rid=1, id=n, start=8000, length=50, mapq=60))
+	for _ in range(400):
+		n += 1
+		recs.append(hc.record("se", rid=0, id=n, start=5010, length=50, mapq=0, uniq=0))
+		recs.append(hc.record("se", rid=1, id=n, start=8010, length=50, mapq=0, uniq=0))
+	_, weights = hc.allocation_classes(recs, 0)
+	assert len(weights) == 400
+	assert all(sorted(w for _, w in v) == [1, 9] for v in weights.values())
+	got = _allocate(cpp, recs, seed, 0)
+	multi = [r for r in got if r["mapq"] < hc.MIN_UNIQUE_MAPQ]
+	assert len(multi) == 400 and len(set(r["id"] for r in multi)) == 400
+	heavy = sum(1 for r in multi if r["rid"] == 0)
+	assert 330 <= heavy <= 385, heavy
 
 
 # ----------------------------------------------------------- summary

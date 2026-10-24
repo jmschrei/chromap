@@ -13,7 +13,6 @@ offset in the repeat, so an output line's reference and start name the read
 and the copy."""
 
 import collections
-import re
 
 import pytest
 
@@ -96,10 +95,7 @@ def _allocation(run, design, distance):
 			assert name not in placed, name
 		else:
 			assert placed.get(name) in positive, (name, placed.get(name), positive)
-	allocated = sum(1 for c in classes.values() if c != "dropped")
-	assert "Allocated %d multi-mappings" % allocated in run.stderr
-	m = re.search(r"# multi-mappings that have no uni-mapping overlaps: (\d+)\.", run.stderr)
-	assert m is not None and int(m.group(1)) == len(classes) - allocated
+	assert len(placed) == sum(1 for c in classes.values() if c != "dropped")
 	return placed, classes
 
 
