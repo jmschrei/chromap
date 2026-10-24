@@ -229,12 +229,13 @@ def test_paired_end_mapping_statistics(pe_reads, pe_run, chromap_threads):
 
 
 def test_drop_repetitive_pairs_and_cache_options(index, genome, pe_reads, pe_run):
-	"""--drop-repetitive-reads 7 drops pairs with more than 7 best placements
-	(the rep8 pairs, 8) and keeps everything else; --cache-size and
-	--cache-update-param within their ranges do not change any line. The
-	output is the default run's minus the rep8 lines, byte for byte."""
-	run = ch.run_chromap(index, pe_reads, "-q 0 --drop-repetitive-reads 7 --cache-size 2000000 "
-		"--cache-update-param 1", name="pe_drop7")
+	"""--drop-repetitive-reads 2 drops pairs with more than 2 best placements
+	(the rep8 pairs, 8) and keeps everything else, the dup2 pairs with
+	exactly 2 included; --cache-size and --cache-update-param within their
+	ranges do not change any line. The output is the default run's minus the
+	rep8 lines, byte for byte."""
+	run = ch.run_chromap(index, pe_reads, "-q 0 --drop-repetitive-reads 2 --cache-size 2000000 "
+		"--cache-update-param 1", name="pe_drop2")
 	rep8 = set()
 	for p in pe_reads:
 		if p.kind == "rep8":
@@ -243,6 +244,7 @@ def test_drop_repetitive_pairs_and_cache_options(index, genome, pe_reads, pe_run
 	kept = [l for l in base if tuple([l.split("\t")[0], int(l.split("\t")[1]), int(l.split("\t")[2]),
 		l.split("\t")[5]]) not in rep8]
 	assert len(base) - len(kept) == 2
+	assert sum(1 for p in pe_reads if p.kind == "dup2") == 2
 	assert run.lines() == kept, ch.first_line_diff(run.lines(), kept)
 
 
@@ -434,7 +436,6 @@ def test_preset_hic(index, genome, split_reads, split_run):
 	back at the same 5' ends in a pairs file, and the rep8 pairs (MAPQ 0)
 	fall below -q 1."""
 	run = ch.run_chromap(index, split_reads, "--preset hic " + FAST, name="pe_hic")
-	assert "Preset parameters for Hi-C are used." in run.stderr
 	header, recs = run.pairs()
 	assert header[0] == "## pairs format v1.0.0"
 	got = sorted((x.read_id, x.chrom1, x.pos1, x.chrom2, x.pos2, x.strand1, x.strand2) for x in recs)
@@ -482,7 +483,6 @@ def test_preset_atac(index, atac_reads):
 	60; the 2100 bp insert is not reported; a fragment sequenced three times
 	is one line with count 3."""
 	run = ch.run_chromap(index, atac_reads, "--preset atac " + FAST, name="pe_atac")
-	assert "Preset parameters for ATAC-seq/scATAC-seq are used." in run.stderr
 	want = collections.Counter()
 	for p in atac_reads:
 		if p.end - p.start <= 2000:
@@ -517,7 +517,6 @@ def test_preset_chip_with_override(index, chip_reads):
 	reported and the 1800 bp one is not; no Tn5 shift, so fragments are their
 	true [start, end); duplicated fragments come back once with count 2."""
 	run = ch.run_chromap(index, chip_reads, "--preset chip -l 1500 " + FAST, name="pe_chip")
-	assert "Preset parameters for ChIP-seq are used." in run.stderr
 	want = collections.Counter(p.fragment() for p in chip_reads if p.end - p.start <= 1500)
 	got = {(b.chrom, b.start, b.end, b.strand): (b.mapq, b.dups) for b in run.bed()}
 	assert got == {k: (60, n) for k, n in want.items()}

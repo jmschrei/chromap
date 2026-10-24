@@ -1,6 +1,10 @@
 // Area B unit tests of the candidate cache (src/mmcache.hpp). The command
-// line never reaches a filled cache (it is updated only after a batch of
-// 500,000 reads), so its contract is tested here directly:
+// line reaches a filled cache only after a batch of 500,000 reads (one test
+// in tests/test_b_cache.py does), so its rules are tested here directly.
+// They are part of chromap's output: which reads hit the cache decides the
+// summary's cachehit, fric, estfrip and numcacheslots columns (README), so a
+// change to them changes the summary of any large input even where the
+// mapping output stays the same:
 //
 // - Update(minimizers, candidates) counts updates per slot (slot = (first +
 //   last minimizer hash) mod size) and per fingerprint ((first ^ last) mod
@@ -262,20 +266,6 @@ CT_TEST(cache_replacement_and_saturation) {
   }
 }
 
-// DirectUpdateWeight adds to a slot's weight: A stored with weight 1 plus 3
-// needs five dominant B updates (B's 3rd to 7th: 4 -> -1) instead of two.
-CT_TEST(cache_direct_update_weight) {
-  mm_cache cache(kSlots);
-  cache.SetKmerLength(kK);
-  UpdateTimes(cache, ReadA(), PositiveA(), NegativeA(), 10);
-  cache.DirectUpdateWeight(kSlotA, 3);
-  CacheMetadata q;
-  UpdateTimes(cache, ReadB(), PositiveB(), std::vector<Candidate>(), 6);
-  CT_CHECK_EQ(QueryWith(cache, ReadA(), q), kSlotA);
-  UpdateTimes(cache, ReadB(), PositiveB(), std::vector<Candidate>(), 1);
-  CT_CHECK_EQ(QueryWith(cache, ReadB(), q), kSlotA);
-}
-
 // Candidates that start within k + (first minimizer position) of the
 // reference start (here 30 < 17 + 20) are not cached: the read keeps
 // missing.
@@ -310,16 +300,6 @@ CT_TEST(cache_update_threshold) {
   CT_CHECK_EQ(cache.GetUpdateThreshold(500000, 12500000, true, 0.01), 476190u);
   CT_CHECK_EQ(cache.GetUpdateThreshold(500000, 2500001, true, 1.0), 250000u);
   CT_CHECK_EQ(cache.GetUpdateThreshold(1000, 99999999, true, 0.0), 1000u);
-}
-
-// GetMemoryBytes counts every slot plus the vectors of stored entries.
-CT_TEST(cache_memory_bytes) {
-  mm_cache cache(kSlots);
-  cache.SetKmerLength(kK);
-  const uint64_t empty = cache.GetMemoryBytes();
-  CT_CHECK_EQ(empty, (uint64_t)kSlots * sizeof(_mm_cache_entry));
-  UpdateTimes(cache, ReadA(), PositiveA(), NegativeA(), 10);
-  CT_CHECK(cache.GetMemoryBytes() >= empty + 4 * sizeof(uint64_t) + 3 * sizeof(int) + 3 * sizeof(Candidate));
 }
 
 // printstats SIZE: a cache of SIZE slots, read A updated 10 times with

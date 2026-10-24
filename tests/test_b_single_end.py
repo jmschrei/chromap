@@ -7,7 +7,7 @@ simulation truth; expected CIGARs from the affine-gap reference of
 helpers_b.semi_global over the window chromap searches; expected MAPQ values
 from the MAPQ rule written out in helpers_b.mapq_single_end; seed counts from
 the read's minimizers by definition (helpers_b.seed_support). Runs are shared
-through module fixtures: 10 chromap processes in all."""
+through module fixtures: 11 chromap processes in all."""
 
 import collections
 
@@ -278,13 +278,14 @@ def test_single_end_bed_default_threshold(se_reads, se_bed):
 CAP_ARGS = "--SAM -n 5 --drop-repetitive-reads 3 -q 0"
 
 
-def test_max_num_best_mappings_capped_by_drop_repetitive_reads(index, genome, se_reads, chromap_threads):
-	"""-n 5 with --drop-repetitive-reads 3: chromap warns that it will report
-	at most 3 mappings and lowers -n to 3. A rep8 read is then reported at 3
-	distinct copies out of its 8 (chosen by reservoir sampling), one of them
-	primary; a dup2 read at both copies; unique and dupmm reads once at their
-	true position; MAPQ as in the default run. Single-end reads are not
-	dropped by --drop-repetitive-reads."""
+def test_max_num_best_mappings_capped_by_drop_repetitive_reads(index, genome, se_reads):
+	"""-n 5 with --drop-repetitive-reads 3: chromap warns that only reads
+	with at most 3 best mappings will be output. Reads with at most 3 are
+	unaffected: a dup2 read is reported at both copies (one record primary),
+	unique and dupmm reads once at their true position, with MAPQ as in the
+	default run. (Single-end reads with more than 3 best mappings, the rep8
+	reads, are still reported at 949043c: known bug
+	r1-single-end-drop-repetitive-reads, not asserted here.)"""
 	run = ch.run_chromap(index, se_reads, CAP_ARGS, name="se_cap", shared=True)
 	assert ("WARNING: you want to drop mapped reads with more than 3 mappings. But you want to output top 5 "
 		"best mappings. In this case, only reads with <=3 best mappings will be output.") in run.stderr
@@ -292,24 +293,23 @@ def test_max_num_best_mappings_capped_by_drop_repetitive_reads(index, genome, se
 	by_name = collections.defaultdict(list)
 	for rec in recs:
 		by_name[rec.qname].append(rec)
-	total = 0
+	n = 0
 	for r in se_reads:
 		got = by_name.get(r.name, [])
 		if r.kind == "random":
 			assert got == [], r
 			continue
-		if r.kind in ("dup2", "rep8"):
-			loci = {(c, s + 1, st) for c, s, e, st in _segment_loci(genome, r)}
+		if r.kind == "rep8":
+			continue
+		if r.kind == "dup2":
+			loci = sorted((c, s + 1, st) for c, s, e, st in _segment_loci(genome, r))
 		else:
-			loci = {(r.contig, r.start + 1, r.strand)}
-		keys = [(x.rname, x.pos, "-" if x.is_reverse else "+") for x in got]
-		assert len(keys) == {"dup2": 2, "rep8": 3}.get(r.kind, 1), r
-		assert len(set(keys)) == len(keys) and set(keys) <= loci, r
+			loci = [(r.contig, r.start + 1, r.strand)]
+		assert sorted((x.rname, x.pos, "-" if x.is_reverse else "+") for x in got) == loci, r
 		assert {x.mapq for x in got} == {_expected_mapq(r)}, r
 		assert sum(1 for x in got if not x.is_secondary) == 1, r
-		total += len(got)
-	if chromap_threads == 1:
-		assert run.stats()["Number of mappings"] == total
+		n += 1
+	assert n == len(se_reads) - 6 - 4
 
 
 # --------------------------------------------- -e, -s, -q and MAPQ values
@@ -403,7 +403,9 @@ def test_error_threshold_seeds_and_mapq_threshold(index, threshold_reads, chroma
 def repeat_reads(genome):
 	"""Reads inside rep8 (4) and reads that start in unique sequence and end
 	inside a forward rep8 copy, or the reverse, with 0-3 substitutions in the
-	rep8 part (24); 4 unique exact reads."""
+	rep8 part (24 of 50 bp, kind "boundary"); 8 such reads of 100 bp with 3
+	or 5 substitutions, whose identities 0.97 and 0.95 are the upper ends of
+	two MAPQ identity bands; 4 unique exact reads."""
 	sim = ch.ReadSimulator(genome, seed=ch.stable_seed("test_b_single_end", "repeat_reads"), name_prefix="p")
 	rng = sim.rng
 	reads = []
@@ -435,6 +437,30 @@ def repeat_reads(genome):
 			continue
 		r.kind = "boundary"
 		reads.append(r)
+	i = -1
+	while sum(1 for r in reads if len(r.seq) == 100) < 8:
+		i += 1
+		c = copies[i % len(copies)]
+		d = rng.randint(12, 20)
+		k = (3, 5)[(i // 2) % 2]
+		if i % 2 == 0:
+			start = c.start - d
+			offs = [91 - j for j in range(k)]
+		else:
+			start = c.end - 100 + d
+			offs = [8 + j for j in range(k)]
+		strand = rng.choice("+-")
+		read_offs = offs if strand == "+" else [99 - o for o in offs]
+		r = sim.se_read(c.contig, start, 100, strand, mismatches=read_offs)
+		if _unique_seed_hits(genome, r, counts) < 2:
+			continue
+		# Adjacent substitutions can be cheaper as an indel pair; keep reads
+		# whose draft (edit distance) error count is the substitution count.
+		cand = r.start if strand == "+" else r.end - 1
+		if hb.draft_mapping(genome.contigs[c.contig], r.seq, strand, cand, E) != (k, r.end - 1):
+			continue
+		r.kind = "boundary"
+		reads.append(r)
 	for i in range(4):
 		ctg, s = sim.unique_locus(50)
 		r = sim.se_read(ctg, s, 50, "+-"[i % 2])
@@ -448,14 +474,15 @@ def _unique_seed_hits(genome, r, counts):
 	occurring fewer than 5 times (helpers_b.seed_support restricted to them)."""
 	mins = hb.read_minimizers(r.seq)
 	ref = hb.locus_minimizers(genome, r.contig, r.start, r.end)
+	last = len(r.seq) - 1
 	hits = 0
 	for h, p, _ in mins:
 		if counts.get(h, 0) >= 5:
 			continue
-		g0 = r.start + p - hb.K + 1 if r.strand == "+" else r.start + 49 - p
+		g0 = r.start + p - hb.K + 1 if r.strand == "+" else r.start + last - p
 		if any(g0 <= m < g0 + hb.K for m in r.mismatches):
 			continue
-		ref_end = r.start + p if r.strand == "+" else r.start + 49 - p + hb.K - 1
+		ref_end = r.start + p if r.strand == "+" else r.start + last - p + hb.K - 1
 		hits += (h, ref_end) in ref
 	return hits
 
@@ -466,7 +493,8 @@ def _boundary_mapq(genome, r, counts, f0):
 	(helpers_b.repetitive_seed_length) scales the MAPQ of its unique
 	mapping."""
 	rep = [p for h, p, _ in hb.read_minimizers(r.seq) if counts.get(h, 0) >= f0]
-	return hb.mapq_single_end(len(r.mismatches), 50, 50, E, E + 1, 1, 0, hb.repetitive_seed_length(rep))
+	n = len(r.seq)
+	return hb.mapq_single_end(len(r.mismatches), n, n, E, E + 1, 1, 0, hb.repetitive_seed_length(rep))
 
 
 def test_seed_frequency_second_round_and_repetitive_mapq(index, genome, repeat_reads):
@@ -477,7 +505,8 @@ def test_seed_frequency_second_round_and_repetitive_mapq(index, genome, repeat_r
 	seeds; its rep8 seeds are counted as repetitive and lower its MAPQ by the
 	repetitive seed length (helpers_b._boundary_mapq; with identity >= 0.999
 	the factor is 1 - f^4, then 1 - f^2, 1 - f and 1 - sqrt(f) as
-	substitutions lower the identity)."""
+	substitutions lower the identity, the bands closed at 0.97 and 0.95:
+	identity 0.97 still gets 1 - f and 0.95 1 - sqrt(f))."""
 	run = ch.run_chromap(index, repeat_reads, "--SAM -f 5,1000 -n 8 -q 0", name="se_f5_1000")
 	header, recs = run.sam()
 	by_name = collections.defaultdict(list)
@@ -495,8 +524,8 @@ def test_seed_frequency_second_round_and_repetitive_mapq(index, genome, repeat_r
 		mapq = _boundary_mapq(genome, r, counts, 5) if r.kind == "boundary" else 60
 		assert [(x.rname, x.pos, x.mapq) for x in got] == [(r.contig, r.start + 1, mapq)], r
 		if mapq < 60:
-			lowered.add(len(r.mismatches))
-	assert lowered == {0, 1, 2, 3}
+			lowered.add((len(r.seq), len(r.mismatches)))
+	assert lowered == {(50, 0), (50, 1), (50, 2), (50, 3), (100, 3), (100, 5)}
 
 
 def test_seed_frequency_both_rounds_skip(index, genome, repeat_reads, chromap_threads):
@@ -591,15 +620,29 @@ def test_scoring_options_choose_the_alignment(index, genome, scoring_reads):
 
 # ----------------------------------------------------------- threads
 
-def test_single_end_thread_count_does_not_change_output(index, se_reads):
+def test_single_end_thread_count_does_not_change_output(index, genome, se_reads):
 	"""Single-end mapping runs t * t OpenMP tasks, so -t 4 spreads even a
-	hundred reads over threads. SAM output with -n 3 (reached through
-	--drop-repetitive-reads 3: rep8 reads drawn by reservoir sampling from a
-	generator seeded per read), indels and second-best MAPQ is byte-identical
-	at -t 1 and -t 4. The run at the session's -t is shared with the test
-	above."""
-	one = ch.run_chromap(index, se_reads, CAP_ARGS, threads=1, name="se_cap", shared=True)
-	four = ch.run_chromap(index, se_reads, CAP_ARGS, threads=4, name="se_cap", shared=True)
+	hundred reads over threads. SAM output with -n 3 -q 0 (rep8 reads, 8 best
+	mappings, reported at 3 distinct copies drawn by reservoir sampling from
+	a generator seeded per read; dup2 reads at both copies), indels and
+	second-best MAPQ is byte-identical at -t 1 and -t 4."""
+	one = ch.run_chromap(index, se_reads, "--SAM -n 3 -q 0", threads=1, name="se_n3", shared=True)
+	four = ch.run_chromap(index, se_reads, "--SAM -n 3 -q 0", threads=4, name="se_n3", shared=True)
 	a, b = one.lines(), four.lines()
-	assert len([l for l in a if not l.startswith("@")]) > len(se_reads)
 	assert a == b, ch.first_line_diff(a, b)
+	header, recs = one.sam()
+	by_name = collections.defaultdict(list)
+	for rec in recs:
+		by_name[rec.qname].append(rec)
+	n = 0
+	for r in se_reads:
+		if r.kind not in ("dup2", "rep8"):
+			continue
+		got = by_name[r.name]
+		keys = [(x.rname, x.pos, "-" if x.is_reverse else "+") for x in got]
+		loci = {(c, s + 1, st) for c, s, e, st in _segment_loci(genome, r)}
+		assert len(keys) == {"dup2": 2, "rep8": 3}[r.kind], r
+		assert len(set(keys)) == len(keys) and set(keys) <= loci, r
+		assert sum(1 for x in got if not x.is_secondary) == 1, r
+		n += 1
+	assert n == 8

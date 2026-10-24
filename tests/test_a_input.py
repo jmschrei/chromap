@@ -76,25 +76,14 @@ def se_multi_run(index, se_files):
 	return ch.run_chromap(index, {"r1": [paths[0], paths[1], d / "q_*"]}, name="se_multi")
 
 
-def test_multiple_files_lists_and_globs(se_multi_run, se_files):
-	"""-1 takes a comma-separated list whose elements may be glob patterns;
-	each pattern expands in sorted order, so the files are read as p1.fq,
-	p2.fq.gz, q_a.fa.gz, q_b.fa, which chromap lists on stderr ("1th read 1
-	file: ..."), after printing each path a pattern matched."""
-	d, paths, _ = se_files
-	order = [paths[0], paths[1], paths[3], paths[2]]
-	listed = [line for line in se_multi_run.stderr.splitlines() if "th read 1 file: " in line]
-	assert listed == ["%dth read 1 file: %s" % (i + 1, p) for i, p in enumerate(order)]
-	lines = se_multi_run.stderr.splitlines()
-	assert lines.index(str(paths[3])) < lines.index(str(paths[2])) < lines.index(listed[0])
-
-
 def test_multiple_files_fastq_fasta_gzip_map_to_truth(se_multi_run, se_reads):
-	"""Reads from plain and gzipped FASTQ and FASTA files (multi-line FASTA,
-	headers with comments, reads in lower case) are all loaded ("Number of
-	reads" counts every read of every file) and those of at least 30 bases
-	(the default --min-read-length) map to their true interval and strand
-	with MAPQ 60 and count 1; shorter ones are dropped before mapping."""
+	"""-1 takes a comma-separated list whose last element is the glob
+	pattern q_*: reads from plain and gzipped FASTQ and FASTA files
+	(multi-line FASTA, headers with comments, reads in lower case) of every
+	listed and matched file are all loaded ("Number of reads" counts every
+	read of every file) and those of at least 30 bases (the default
+	--min-read-length) map to their true interval and strand with MAPQ 60
+	and count 1; shorter ones are dropped before mapping."""
 	kept = [r for r in se_reads if len(r.seq) >= 30]
 	assert _bed_set(se_multi_run) == _truth(kept)
 	assert {(b.mapq, b.dups) for b in se_multi_run.bed()} == {(60, 1)}
@@ -118,27 +107,33 @@ def test_min_read_length(index, se_reads, min_length):
 
 
 def test_read_ids_continue_across_files_and_names(index, genome, tmp_path):
-	"""Read ids count on from one input file to the next. chromap sorts SAM
-	records with equal position, strand and MAPQ by read id, so of two
-	identical reads at one locus, the one in the first file is written
-	first; were ids to restart at 0 in the second file, its read (placed
-	first there) would come first. Names are cut at the first space or tab;
-	a /1 suffix is kept."""
+	"""Read ids count on from one input file to the next, in the order the
+	files are given, a glob pattern contributing its matches in sorted
+	order. chromap sorts SAM records with equal position, strand and MAPQ by
+	read id, so of three identical reads at one locus, one in each file, the
+	one in the first file is written first; were ids to restart at 0 in each
+	file (each tie read is placed first there), or the pattern's matches
+	read in another order, the order would differ. -1 is "x.fq,y_*" and
+	y_* matches y_a.fq.gz and y_b.fq (written in the other order). Names are
+	cut at the first space or tab; a /1 suffix is kept."""
 	sim = ch.ReadSimulator(genome, seed=ch.stable_seed("test_a_input", "read_ids"))
 	first = [sim.se_read(*sim.unique_locus(50), strand="+-"[i % 2], name="x%02d/1" % i if i % 4 == 0 else None)
 		for i in range(20)]
 	second = [sim.se_read(*sim.unique_locus(50), strand="+-"[i % 2]) for i in range(20)]
+	third = [sim.se_read(*sim.unique_locus(50), strand="+-"[i % 2]) for i in range(10)]
 	ties = []
 	for i in range(3):
 		contig, start = sim.unique_locus(50)
 		a = sim.se_read(contig, start, 50, "+-"[i % 2], name="tie%d_first" % i)
 		b = ch.SimRead("tie%d_second" % i, a.seq, a.qual, a.contig, a.start, a.end, a.strand)
-		ties.append((a, b))
-	f1 = ha.write_reads(tmp_path / "x.fq", first + [a for a, _ in ties], header="{name} first file")
-	f2 = ha.write_reads(tmp_path / "y.fq.gz", [b for _, b in ties] + second, gz=True, header="{name}\tsecond")
-	run = ch.run_chromap(index, {"r1": [f1, f2]}, "--SAM", name="se_ids")
+		c = ch.SimRead("tie%d_third" % i, a.seq, a.qual, a.contig, a.start, a.end, a.strand)
+		ties.append((a, b, c))
+	f1 = ha.write_reads(tmp_path / "x.fq", first + [t[0] for t in ties], header="{name} first file")
+	ha.write_reads(tmp_path / "y_b.fq", [t[2] for t in ties] + third)
+	ha.write_reads(tmp_path / "y_a.fq.gz", [t[1] for t in ties] + second, gz=True, header="{name}\tsecond")
+	run = ch.run_chromap(index, {"r1": [f1, tmp_path / "y_*"]}, "--SAM", name="se_ids")
 	header, recs = run.sam()
-	truth = {r.name: r for r in first + second + [x for t in ties for x in t]}
+	truth = {r.name: r for r in first + second + third + [x for t in ties for x in t]}
 	assert sorted(rec.qname for rec in recs) == sorted(truth)
 	assert sum(1 for rec in recs if rec.qname.endswith("/1")) == 5
 	for rec in recs:
@@ -146,19 +141,22 @@ def test_read_ids_continue_across_files_and_names(index, genome, tmp_path):
 		assert (rec.rname, rec.pos, rec.flag) == (r.contig, r.start + 1, 0 if r.strand == "+" else 16)
 	names = [rec.qname for rec in recs]
 	for i in range(3):
-		assert names.index("tie%d_first" % i) + 1 == names.index("tie%d_second" % i)
+		at = names.index("tie%d_first" % i)
+		assert names[at:at + 3] == ["tie%d_%s" % (i, x) for x in ("first", "second", "third")]
 
 
 def test_mapping_takes_k_and_w_from_index(index_factory, se_reads):
-	"""Mapping reads k and w from the index file (-x), not from the command
-	line defaults: with an index built with -k 21 -w 11, chromap reports
-	"Kmer size: 21, window size: 11" on loading it and the 50 bp reads map to
-	their origin (their minimizers are computed with k 21 and w 11; with k 17
-	none would match the index)."""
+	"""Mapping computes read minimizers with the k and w stored in the index
+	file (-x), not the defaults 17 and 7. With an index built with -k 21
+	-w 11 and -s 1000, a read maps only when every one of its minimizers
+	hits its locus (chromap requires min(-s, number of minimizers) seeds).
+	Every minimizer of an exact read with k 21 and w 11 is a reference
+	minimizer of its locus, so all 50 bp reads map to their origin; with k
+	17 no read minimizer would be in the index, and with w 7 a read has
+	minimizers that the w 11 index does not hold."""
 	idx = index_factory(k=21, w=11)
 	reads = ch.ReadSet([r for r in se_reads if len(r.seq) == 50])
-	run = ch.run_chromap(idx, reads, name="se_k21")
-	assert "Kmer size: 21, window size: 11.\n" in run.stderr
+	run = ch.run_chromap(idx, reads, "-s 1000", name="se_k21")
 	assert _bed_set(run) == _truth(reads)
 
 
@@ -220,7 +218,6 @@ def test_parallel_parsing_gives_same_output(pe_runs):
 	tasks; the output is byte-identical to the -t 1 run."""
 	one, four = pe_runs[1].lines(), pe_runs[4].lines()
 	assert one == four, ch.first_line_diff(one, four)
-	assert "Number of threads: 4" in pe_runs[4].stderr
 
 
 def test_paired_end_min_read_length_either_mate(index, pe_files, pe_reads):

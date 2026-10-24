@@ -6,6 +6,7 @@ helpers_a.sketch, grouped by hash into singletons and occurrence lists
 (helpers_a.expected_index). Index::Load, Save, CheckIndex, the index_utils.h
 layouts and the heap merge are reached through tests/cpp/a_index.cc."""
 
+import hashlib
 import random
 import re
 import shutil
@@ -154,6 +155,15 @@ def test_default_index_matches_reference(index, genome, default_expected):
 	assert len(plain) == len(kept) + 1 and set(kept) < set(plain)
 
 
+def test_default_index_bytes(index):
+	"""Pins the current output: the md5 of the default genome's index file
+	(k 17, w 7) as chromap 949043c writes it. The other tests check what the
+	file holds; this one also fixes the khash bucket layout and every other
+	byte, so that indexes written before and after a change are the same
+	file. (The genome is the same under every supported Python version.)"""
+	assert hashlib.md5(index.path.read_bytes()).hexdigest() == "f15ce52dc146b9597ed2414041ae4af4"
+
+
 def test_default_index_khash_layout(index, default_expected):
 	"""The khash dump is a valid table: a power-of-two bucket count,
 	size == n_occupied (nothing deleted) == the header's table size,
@@ -175,25 +185,19 @@ def test_default_index_khash_layout(index, default_expected):
 	assert all(ha.khash_find(parsed, h << 1) is None for h in missing)
 
 
-def test_index_build_messages(index, genome, default_expected):
-	"""Building the index reports on stderr: the k and w used ("Kmer length:
-	17, window size: 7"), the reference and output paths, the number of
-	minimizers collected, the lookup table and occurrence table sizes and the
-	number of singletons, and Index::Statistics' line: distinct minimizers,
-	the percentage that are singletons, average occurrences per distinct
-	minimizer and average spacing (bases per minimizer)."""
+def test_index_statistics(index, genome, default_expected):
+	"""Index::Statistics, whose only output is its report on stderr when the
+	index is built, gives k, w and the number of reference sequences, the
+	number of distinct minimizers, the percentage that are singletons,
+	the average occurrences per distinct minimizer and the average spacing
+	(reference bases per minimizer occurrence), all computed here from the
+	expected index. Other log lines of index building are not asserted."""
 	entries, occurrences = default_expected
 	err = index.stderr
 	n = len(entries)
 	n1 = sum(1 for key in entries if key & 1)
 	total = n1 + len(occurrences)
-	assert "Kmer length: 17, window size: 7\n" in err
-	assert "Reference file: %s\n" % index.fasta in err
-	assert "Output file: %s\n" % index.path in err
-	assert "Collected %d minimizers.\n" % total in err
-	assert re.search(r"Lookup table size: %d, # buckets: \d+, occurrence table size: %d, # singletons: %d\.\n"
-		% (n, len(occurrences), n1), err)
-	assert "[M::Statistics] kmer size: 17; skip: 7; #seq: 4\n" in err
+	assert re.search(r"kmer size: 17; skip: 7; #seq: 4\b", err)
 	stats = re.search(r"distinct minimizers: (\d+) \(([\d.]+)% are singletons\); average occurrences: ([\d.]+); "
 		r"average spacing: ([\d.]+)", err)
 	assert stats is not None
@@ -249,12 +253,10 @@ def test_index_with_even_k(even_reference, tmp_path, k, w):
 def test_min_frag_length_k_and_w(even_reference, tmp_path, args, k, w):
 	"""--min-frag-length picks k and w (<= 60: 17 and 7; <= 80: 19 and 10;
 	above: 23 and 11), and -k/--kmer and -w/--window given as well win
-	wherever they stand on the command line. The chosen values are echoed and
-	written to the index header, and the index holds the minimizers of that
-	k and w."""
+	wherever they stand on the command line. The chosen values are written to
+	the index header, and the index holds the minimizers of that k and w."""
 	path, seqs = even_reference
 	built = _build(path, tmp_path, extra_args=args)
-	assert "Kmer length: %d, window size: %d\n" % (k, w) in built.stderr
 	parsed = ha.parse_index(built.path)
 	assert (parsed.k, parsed.w) == (k, w)
 	assert _content(parsed) == ha.expected_index(seqs, k, w)

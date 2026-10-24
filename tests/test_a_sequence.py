@@ -233,6 +233,48 @@ def test_minimizers_short_sequences(cpp, tmp_path):
 		assert got[i] == [(h, ((i << 32 | e) << 1) | strand)]
 
 
+@pytest.mark.parametrize("k,w", [(17, 7), (11, 5), (15, 10)])
+def test_minimizers_first_window_ties(cpp, tmp_path, k, w):
+	"""Identical k-mers tied for the smallest hash in a sequence's first
+	window (from a tandem repeat of period below w, or a k-mer and its reverse
+	complement in an inverted repeat, at the start) are all minimizers, as in
+	every later window: MinimizerGenerator returns the window minimizers by
+	definition, ties included (chromap_helpers.reference_minimizers). Kept to
+	sequences whose w-th k-mer does not itself tie the minimum: there chromap
+	writes only that last copy for the first window, a case the definition
+	leaves open."""
+	rng = random.Random(ch.stable_seed("a_sequence", "first_window_ties", k, w))
+	seqs = []
+	for attempt in range(20000):
+		if len(seqs) == 30:
+			break
+		kind = attempt % 3
+		lead = _random_seq(rng, rng.randint(0, 4))
+		if kind == 0:
+			unit = _random_seq(rng, rng.randint(2, w - 1))
+			s = lead + (unit * (k + w))[:rng.randint(k + len(unit), k + w + 4)]
+		elif kind == 1:
+			s = lead + ("CA" * 30)[:rng.randint(k + 1, k + w + 3)]
+		else:
+			# Inverted repeat A + revcomp(A): the k-mers at offsets 0 and d are
+			# each other's reverse complement.
+			d = rng.choice([x for x in (1, 3, 5) if x < w])
+			a = _random_seq(rng, (k + d) // 2)
+			s = lead + a + ch.revcomp(a)
+		s += _random_seq(rng, rng.randint(10, 80))
+		keys = [ch.kmer_minimizer_key(s[e - k + 1:e + 1])[0] for e in range(k - 1, len(s))]
+		first = keys[:w]
+		if first.count(min(first)) > 1 and keys[w - 1] != min(first):
+			seqs.append((s, min(first)))
+	assert len(seqs) == 30
+	got = _minimizers(cpp, tmp_path, [s for s, _ in seqs], k, w)
+	for i, (s, smallest) in enumerate(seqs):
+		want = ch.reference_minimizers(s, k, w, seq_index=i)
+		assert got.get(i, []) == want, "sequence %d: %r" % (i, s)
+		# Several tied minimizers end inside the first window.
+		assert sum(1 for h, hit in want if h == smallest and ((hit >> 1) & 0xFFFFFFFF) < k - 1 + w) > 1
+
+
 def test_minimizers_append_to_non_empty_vector(cpp, tmp_path):
 	"""GenerateMinimizers appends to the vector it is given: an entry already
 	there stays first and the sequence's minimizers follow unchanged."""
@@ -321,8 +363,9 @@ def test_load_batch_limits_and_ids(cpp, tmp_path):
 	"""LoadBatch fills at most GetMaxBatchSize records per call, returns 0 at
 	the end of the file and keeps counting ids across calls (7 records in
 	batches of 3: 3, 3, 1, 0 with ids 0-6); GetNumSequences is the size of
-	the current batch and GetNumBases stays 0 (only LoadAllSequences counts
-	bases)."""
+	the current batch. (GetNumBases is documented only for LoadAllSequences
+	and the end-of-file message is a log line, so neither is asserted
+	here.)"""
 	rng = random.Random(ch.stable_seed("a_sequence", "batch"))
 	reads = [("r%d extra" % i, _random_seq(rng, 10 + i), "".join(chr(33 + (i + j) % 40) for j in range(10 + i)))
 		for i in range(7)]
@@ -334,8 +377,7 @@ def test_load_batch_limits_and_ids(cpp, tmp_path):
 	assert batches == [(3, 3), (3, 3), (1, 1), (0, 0)]
 	recs, info = _records(out)
 	assert recs == [(i % 3, i, "r%d" % i, len("r%d" % i), 10 + i, reads[i][1], reads[i][2]) for i in range(7)]
-	assert info == {"num_sequences": 0, "num_bases": 0, "max_batch": 3}
-	assert "No more sequences." in proc.stderr.decode()
+	assert (info["num_sequences"], info["max_batch"]) == (0, 3)
 
 
 def test_load_one_sequence_at_slots(cpp, tmp_path):

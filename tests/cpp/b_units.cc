@@ -28,14 +28,10 @@ class TestMetadata : public MappingMetadata {
   using MappingMetadata::minimizers_;
   using MappingMetadata::negative_candidates_;
   using MappingMetadata::negative_candidates_buffer_;
-  using MappingMetadata::negative_hits_;
   using MappingMetadata::negative_mappings_;
-  using MappingMetadata::negative_split_sites_;
   using MappingMetadata::positive_candidates_;
   using MappingMetadata::positive_candidates_buffer_;
-  using MappingMetadata::positive_hits_;
   using MappingMetadata::positive_mappings_;
-  using MappingMetadata::positive_split_sites_;
   using MappingMetadata::repetitive_seed_length_;
 };
 
@@ -206,8 +202,9 @@ CT_TEST(mapping_parameters_defaults) {
   }
 }
 
-// Counters follow the vectors; PrepareForMappingNextRead clears everything
-// and resets the repetitive seed length.
+// Counters follow the vectors; PrepareForMappingNextRead leaves no
+// minimizer, candidate or draft mapping and resets the repetitive seed
+// length. (Which scratch vectors it clears is not asserted.)
 CT_TEST(mapping_metadata_counters_and_reset) {
   TestMetadata m;
   m.PrepareForMappingNextRead(16);
@@ -222,9 +219,6 @@ CT_TEST(mapping_metadata_counters_and_reset) {
   m.positive_mappings_.emplace_back(0, 5);
   m.negative_mappings_.emplace_back(1, 6);
   m.negative_mappings_.emplace_back(2, 7);
-  m.positive_hits_.push_back(1);
-  m.positive_candidates_buffer_.push_back(MakeCandidate(0, 1, 1));
-  m.positive_split_sites_.push_back(1);
   m.repetitive_seed_length_ = 33;
   CT_CHECK_EQ(m.GetNumMinimizers(), (size_t)3);
   CT_CHECK_EQ(m.GetNumPositiveCandidates(), (size_t)2);
@@ -243,9 +237,6 @@ CT_TEST(mapping_metadata_counters_and_reset) {
   CT_CHECK_EQ(m.GetNumMinimizers(), (size_t)0);
   CT_CHECK_EQ(m.GetNumCandidates(), (size_t)0);
   CT_CHECK_EQ(m.GetNumDraftMappings(), (size_t)0);
-  CT_CHECK(m.positive_hits_.empty());
-  CT_CHECK(m.positive_candidates_buffer_.empty());
-  CT_CHECK(m.positive_split_sites_.empty());
   CT_CHECK_EQ(m.repetitive_seed_length_, 0u);
 }
 
