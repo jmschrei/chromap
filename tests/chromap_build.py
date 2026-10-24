@@ -9,6 +9,9 @@ and an unchanged tree never does. Nothing is written into the repository.
 
 Environment:
 	CHROMAP_BIN            an already built chromap; the CLI tests use it as is
+	CHROMAP_TEST_SRC_DIR   build chromap and the C++ drivers from this src/
+	                       directory instead of the checkout's (e.g. a mutant
+	                       copy); flags still come from the checkout's Makefile
 	CHROMAP_TEST_BUILD_DIR cache directory (default <tempdir>/chromap-tests-<user>)
 	CHROMAP_TEST_BUILD_JOBS parallel compile jobs (default 4)
 	CHROMAP_TEST_CXX, CHROMAP_TEST_CXXFLAGS, CHROMAP_TEST_LDFLAGS  make overrides
@@ -26,7 +29,21 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_DIR = REPO_ROOT / "src"
+
+
+def _src_dir():
+	"""The src/ directory to build: $CHROMAP_TEST_SRC_DIR when set (it must
+	hold chromap's sources), else this checkout's src/."""
+	env = os.environ.get("CHROMAP_TEST_SRC_DIR")
+	if not env:
+		return REPO_ROOT / "src"
+	p = Path(env).expanduser().resolve()
+	if not (p / "chromap.h").is_file():
+		raise RuntimeError("CHROMAP_TEST_SRC_DIR=%s does not hold chromap's sources (no chromap.h)" % env)
+	return p
+
+
+SRC_DIR = _src_dir()
 TESTS_DIR = Path(__file__).resolve().parent
 CPP_DIR = TESTS_DIR / "cpp"
 MAKEFILE = REPO_ROOT / "Makefile"

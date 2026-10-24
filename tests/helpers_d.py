@@ -10,11 +10,7 @@ the 4DN pairs specification, the read-format extraction from the README's
 """
 
 import collections
-import os
 import random
-import subprocess
-import sys
-from pathlib import Path
 
 import chromap_helpers as ch
 
@@ -306,28 +302,8 @@ def stable_rng(*parts):
 
 # ------------------------------------------------------------ aborting runs
 
-def _no_core_dump():
-	"""preexec_fn for a chromap run that is expected to abort (an option
-	parser exception): no core file. On Linux an RLIMIT_CORE of 1 also keeps
-	the kernel from starting a core_pattern pipe helper (core(5)), which can
-	take about a second per abort; elsewhere the limit is 0."""
-	import resource
-	soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
-	limit = 1 if sys.platform.startswith("linux") else 0
-	if hard != resource.RLIM_INFINITY and hard < limit:
-		limit = hard
-	resource.setrlimit(resource.RLIMIT_CORE, (limit, hard))
-
-
 def run_cli_expect_abort(args, cwd=None):
 	"""chromap_helpers.run_cli for command lines the option parser rejects by
 	throwing (chromap does not catch it and aborts): the same ChromapRun, run
-	without a core dump."""
-	exe = ch.find_chromap()
-	args = ch.split_args(args)
-	out = Path(cwd).resolve() if cwd is not None else ch.fresh_dir("cli_abort")
-	argv = [str(exe)] + args
-	proc = subprocess.run(argv, cwd=str(out), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-		env=ch.subprocess_env(ch.default_threads()), timeout=ch.DEFAULT_TIMEOUT,
-		preexec_fn=_no_core_dump if os.name == "posix" else None)
-	return ch.ChromapRun(out, argv, proc, None, None, None)
+	without a core dump (run_cli's no_core_dump)."""
+	return ch.run_cli(args, cwd=cwd, no_core_dump=True)

@@ -19,8 +19,9 @@
 #define CHROMAP_TEST_H_
 
 // Several src/ headers use standard names without including their headers
-// (bed_mapping.h uses std::tie, for one) and rely on what was included
-// before them. Include this header first in every driver.
+// (bed_mapping.h uses std::tie, mapping_processor.h std::mt19937 and
+// std::discrete_distribution) and rely on what was included before them.
+// Include this header first in every driver.
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -34,6 +35,7 @@
 #include <iostream>
 #include <limits>
 #include <queue>
+#include <random>
 #include <sstream>
 #include <string>
 #include <tuple>

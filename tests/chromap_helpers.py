@@ -18,10 +18,16 @@ import random
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import zlib
 from collections import OrderedDict, namedtuple
 from pathlib import Path
+
+try:
+	import resource as _resource  # POSIX only
+except ImportError:
+	_resource = None
 
 import chromap_build
 
@@ -692,9 +698,31 @@ def _failure(argv, proc):
 		proc.stderr.decode(errors="replace")[-3000:], proc.stdout.decode(errors="replace")[-1000:]))
 
 
-def _execute(argv, cwd, threads, timeout):
+def _limit_core_dump():
+	"""preexec_fn that keeps an aborting child from dumping core. On Linux
+	RLIMIT_CORE 1 (not 0) also stops the kernel from handing the dump to a
+	core_pattern pipe helper such as apport or systemd-coredump (core(5)),
+	which can take about a second per abort; elsewhere the limit is 0. The
+	hard limit is respected."""
+	soft, hard = _resource.getrlimit(_resource.RLIMIT_CORE)
+	limit = 1 if sys.platform.startswith("linux") else 0
+	if hard != _resource.RLIM_INFINITY and hard < limit:
+		limit = hard
+	_resource.setrlimit(_resource.RLIMIT_CORE, (limit, hard))
+
+
+def _core_limit_preexec():
+	"""The preexec_fn for no_core_dump=True, or None where the resource
+	module is not available (not POSIX): there the option does nothing."""
+	if os.name != "posix" or _resource is None:
+		return None
+	return _limit_core_dump
+
+
+def _execute(argv, cwd, threads, timeout, no_core_dump=False):
 	return subprocess.run(argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-		env=subprocess_env(threads), timeout=timeout or DEFAULT_TIMEOUT)
+		env=subprocess_env(threads), timeout=timeout or DEFAULT_TIMEOUT,
+		preexec_fn=_core_limit_preexec() if no_core_dump else None)
 
 
 class ChromapIndex(object):
@@ -821,17 +849,20 @@ def run_chromap(index, reads=None, extra_args=(), threads=None, name=None, outdi
 	return run
 
 
-def run_cli(args, cwd=None, threads=None, timeout=None):
+def run_cli(args, cwd=None, threads=None, timeout=None, no_core_dump=False):
 	"""Run chromap with exactly `args` (list or string) in `cwd` (default a
 	fresh directory) and return a ChromapRun; never raises on a non-zero exit.
 	For help, version and error-path tests. OMP_NUM_THREADS is pinned to
-	`threads` (default default_threads())."""
+	`threads` (default default_threads()). no_core_dump=True lowers the
+	child's RLIMIT_CORE (see _limit_core_dump) for command lines expected to
+	abort, so the system's crash handler does not add a second per abort; it
+	is a no-op where the resource module is unavailable."""
 	exe = find_chromap()
 	args = split_args(args)
 	threads = default_threads() if threads is None else int(threads)
 	out = Path(cwd).resolve() if cwd is not None else fresh_dir("cli")
 	argv = [str(exe)] + args
-	proc = _execute(argv, out, threads, timeout)
+	proc = _execute(argv, out, threads, timeout, no_core_dump=no_core_dump)
 	return ChromapRun(out, argv, proc, None, None, None)
 
 

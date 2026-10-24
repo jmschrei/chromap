@@ -20,8 +20,6 @@
 #include "chromap_test.h"
 
 #include <fstream>
-// mapping_processor.h uses std::mt19937 without including <random>.
-#include <random>
 
 #include "bed_mapping.h"
 #include "khash.h"

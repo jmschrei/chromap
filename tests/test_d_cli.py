@@ -14,6 +14,7 @@ import re
 
 import pytest
 
+import chromap_build
 import chromap_helpers as ch
 import helpers_d as hd
 
@@ -82,7 +83,7 @@ def test_help_without_mode(help_run, args):
 
 
 def _source_version():
-	text = (ch.REPO_ROOT / "src" / "chromap.h").read_text()
+	text = (chromap_build.SRC_DIR / "chromap.h").read_text()
 	return re.search(r'#define CHROMAP_VERSION "([^"]+)"', text).group(1)
 
 

@@ -5,6 +5,7 @@ points at chromap rather than at chromap_helpers."""
 import gzip
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -211,6 +212,20 @@ def test_runner_pins_threads(index, sim):
 	i = run.argv.index("-t")
 	assert run.argv[i + 1] == "2"
 	assert "Number of threads: 2" in run.stderr
+
+
+def test_no_core_dump_lowers_the_child_core_limit(tmp_path):
+	"""run_cli(no_core_dump=True) runs the child with RLIMIT_CORE 1 on Linux
+	(0 elsewhere, never above the hard limit); without it the child keeps
+	the parent's limit. Skipped where the resource module does not exist."""
+	resource = pytest.importorskip("resource")
+	argv = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_CORE)[0])"]
+	soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+	want = 1 if sys.platform.startswith("linux") else 0
+	if hard != resource.RLIM_INFINITY:
+		want = min(want, hard)
+	assert int(ch._execute(argv, tmp_path, 1, None, no_core_dump=True).stdout) == want
+	assert int(ch._execute(argv, tmp_path, 1, None).stdout) == soft
 
 
 def test_shared_runs_are_reused(index, genome):
