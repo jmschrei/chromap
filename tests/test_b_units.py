@@ -342,8 +342,8 @@ def small(index_factory, tmp_path_factory):
 @pytest.fixture(scope="module")
 def small_reads(small):
 	"""Reads on the small genome: unique ones (exact, with substitutions,
-	with a deletion), ones inside rep6 and rep2, and ones straddling a rep6
-	copy's edge, on both strands."""
+	with deletions of 2, 3 and 8 bases), ones inside rep6 and rep2, and ones
+	straddling a rep6 copy's edge, on both strands."""
 	g, _, _ = small
 	sim = ch.ReadSimulator(g, seed=ch.stable_seed("b_units", "small_reads"))
 	reads = []
@@ -357,6 +357,10 @@ def small_reads(small):
 	for i, (c, s) in enumerate([("s1", 475), ("s1", 775), ("s2", 375), ("s3", 1175)]):
 		reads.append(sim.se_read(c, s, 50, "+-"[i % 2]))
 	reads.append(hb.indel_read(g, "s3", 1500, 50, "+", "D", 25, 2, "del"))
+	# Deletions of exactly 3 and 8 bases put the seeds on two diagonals
+	# exactly e apart for the e = 3 and e = 8 cases: still one candidate.
+	reads.append(hb.indel_read(g, "s1", 1200, 50, "+", "D", 24, 3, "del3"))
+	reads.append(hb.indel_read(g, "s1", 1000, 50, "-", "D", 24, 8, "del8"))
 	return reads
 
 
@@ -438,6 +442,9 @@ def test_generate_candidates_groups_hits(cpp, small, small_reads, tmp_path, e, s
 			assert got == [(want, len(mins))], r
 		if r.extra.get("segment") == "rep6" and (e, s, f0, f1) == (8, 2, 500, 1000):
 			assert len(b["P"]) + len(b["N"]) == 6, r
+		if r.name == "del%d" % e and s == 2:
+			# hits on diagonals exactly e apart form one candidate
+			assert len(b["P"]) + len(b["N"]) == 1, (r, b)
 
 
 def _mate_window(cpp, idx, fa, min_seeds, f0, e, queries):
