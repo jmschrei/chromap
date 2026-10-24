@@ -99,7 +99,10 @@ def format_records(kind, rng):
 	"""Unique records (no two share a duplicate key) on chrA, chrB and chrD
 	(chrC has none): ties in start broken by length, MAPQ, strand and
 	barcode, so the sort order is visible in the output; two records with
-	MAPQ below 30."""
+	MAPQ below 30. Except for SAM (whose order ignores the strand), a + record
+	(read id 100) and a - record (read id 101) on chrB tie on every field
+	before the strand, so the - record must come first against the read ids;
+	both have MAPQ exactly 30, which passes -q 30."""
 	recs = []
 	rid_starts = [(0, [10, 10, 10, 10, 200, 950]), (1, [5, 5, 700, 1990]), (3, [0, 2999])]
 	n = 0
@@ -135,6 +138,16 @@ def format_records(kind, rng):
 					mpos=0 if mrid < 0 else s + 150 + j, tlen=0 if mrid < 0 else (1 - 2 * (j % 2)) * (200 + j),
 					flag=flag, positive=1 - d, mapq=mapq, nm=j % 3, cigar=cigar, md="%d" % (40 + j), seq=seq,
 					qual=qual))
+	if kind != "sam":
+		for d, read_id in ((1, 100), (0, 101)):
+			fields = dict(rid=1, id=read_id, start=1500, length=60, mapq=30, dir=d, barcode=BARCODES[1])
+			if kind in ("pe", "peb"):
+				fields.update(length=230)
+			elif kind == "paf":
+				fields.update(name="q%d" % read_id, rlen=60)
+			elif kind == "ppaf":
+				fields.update(length=230, name1="p%d/1" % read_id, name2="p%d/2" % read_id, mapq1=30, mapq2=30)
+			recs.append(hc.record(kind, **fields))
 	return recs
 
 
@@ -315,8 +328,9 @@ def lowmem_records(rng):
 	"""Single-end PAF records spread over four temp files (file 2 empty):
 	duplicate groups split across files, a 300-record group (count 255), a
 	group mixing MAPQ 10 and 60, a group below MAPQ 30, a reference with no
-	records (chrC) and the largest record of the last reference alone in its
-	own file (file 3)."""
+	records (chrC), the first group of chrB at the start of the last group of
+	chrA (not duplicates: different references) and the largest record of
+	the last reference alone in its own file (file 3)."""
 	recs, files = [], []
 	n = [0]
 
@@ -329,9 +343,10 @@ def lowmem_records(rng):
 
 	for k, s in enumerate(range(5, 900, 37)):
 		add(0, s, 1 + k % 4, d=k % 2)
-	add(1, 100, 300)
-	add(1, 400, 4, mapqs=(10, 60, 10, 10))
-	add(1, 600, 3, mapqs=(0, 20, 10))
+	add(1, 893, 2)
+	add(1, 1000, 300)
+	add(1, 1300, 4, mapqs=(10, 60, 10, 10))
+	add(1, 1500, 3, mapqs=(0, 20, 10))
 	add(3, 7, 2, d=0)
 	add(3, 2900, 1, d=1, length=60, file_of=lambda i: 3)
 	return recs, files
@@ -421,7 +436,7 @@ def test_temp_file_round_trip_in_blocks(cpp, tmp_path, kind, block):
 
 
 def allocation_records(rng):
-	"""Unique reads (MAPQ 60) in [300, 10000) of three references and
+	"""Unique reads (MAPQ 60) in [300, 10000) of references 0-2 and
 	multi-reads (MAPQ 0-3, eight locations at most) designed to fall in every
 	class at every distance tested:
 	- edge cases in the empty region [15000, 20000) of reference 1 around a
@@ -435,6 +450,9 @@ def allocation_records(rng):
 	- a read whose locations are all far from unique reads (always dropped)
 	  and one overlapping unique reads at [15000, 15050) of references 0 and
 	  2 (always drawn between them);
+	- the abutting and one-base cases again on reference 3, which has only
+	  three unique reads ([1000, 1050), [2000, 2050), [3000, 3050)), so its
+	  interval tree is searched leaf by leaf rather than through inner nodes;
 	- 40 random multi-reads with two to five locations, some overlapping
 	  unique reads, some in the empty region."""
 	recs = []
@@ -455,6 +473,8 @@ def allocation_records(rng):
 	uniq(2, 0, 5)
 	uniq(0, 15000, 50)
 	uniq(2, 15000, 50)
+	for start in (1000, 2000, 3000):
+		uniq(3, start, 50)
 	far = iter(range(17000, 400000, 600))
 	multi([(1, 16050), (0, next(far))])
 	multi([(1, 15950), (2, next(far))])
@@ -462,6 +482,9 @@ def allocation_records(rng):
 	multi([(2, 10), (1, next(far))])
 	multi([(0, next(far)), (2, next(far))])
 	multi([(0, 15010), (2, 15020), (1, next(far))])
+	multi([(3, 1050), (0, next(far))])
+	multi([(3, 1950), (0, next(far))])
+	multi([(3, 2999), (0, next(far))])
 	for _ in range(40):
 		k = rng.randint(2, 5)
 		locs = []
@@ -475,7 +498,7 @@ def allocation_records(rng):
 
 
 def _allocate(cpp, records, seed, distance):
-	text = cpp("c_pipeline").probe("allocate", 3, seed, distance, input=hc.probe_input(records))
+	text = cpp("c_pipeline").probe("allocate", 4, seed, distance, input=hc.probe_input(records))
 	out = []
 	for line in text.splitlines():
 		tokens = line.split()
@@ -497,7 +520,8 @@ def test_multi_mapping_allocation_classes(cpp, allocation_case, distance):
 	allocation distance (half-open intervals): a read whose weights are all 0
 	is dropped, a read with one positive weight goes there, and otherwise it
 	goes to one of its positive-weight locations. The abutting and clipped
-	edge cases switch class exactly at distance 1 and 6."""
+	edge cases switch class exactly at distance 1 and 6, on a large and a
+	small interval tree."""
 	records = allocation_case
 	uniques, weights = hc.allocation_classes(records, distance)
 	got = _allocate(cpp, records, 11, distance)
@@ -520,12 +544,12 @@ def test_multi_mapping_allocation_classes(cpp, allocation_case, distance):
 		allowed = [key(l) for l, w in weighted if w > 0]
 		assert key(loc) in allowed, (read_id, loc, weighted)
 	assert classes["dropped"] and classes["fixed"] and classes["random"], classes
-	edge = list(weights)[:6]
-	expect_edge = ["dropped", "dropped", "fixed", "dropped"] if distance == 0 else (
-		["fixed", "fixed", "fixed", "dropped"] if distance == 1 else ["fixed", "fixed", "fixed", "fixed"])
-	assert [hc.classify(weights[i]) for i in edge] == expect_edge + ["dropped", "random"]
-	for i, start in zip(edge, (16050, 15950, 16049, 10)):
-		if hc.classify(weights[i]) == "fixed":
+	edge = list(weights)[:9]
+	abut = ["dropped", "dropped", "fixed"] if distance == 0 else ["fixed", "fixed", "fixed"]
+	near_zero = "fixed" if distance >= 6 else "dropped"
+	assert [hc.classify(weights[i]) for i in edge] == abut + [near_zero, "dropped", "random"] + abut
+	for i, start in zip(edge, (16050, 15950, 16049, 10, None, None, 1050, 1950, 2999)):
+		if start is not None and hc.classify(weights[i]) == "fixed":
 			assert placed[i][0]["start"] == start
 	assert placed[edge[5]][0]["start"] in (15010, 15020)
 
