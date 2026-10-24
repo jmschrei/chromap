@@ -194,12 +194,13 @@ def keep_run(index, design):
 
 
 @pytest.fixture(scope="module")
-def relaxed_run(index, design):
-	"""--bc-error-threshold 2 and --bc-probability-threshold 0.45 in one run:
-	the designed ambiguous reads have no candidate two mismatches away, and
-	the reads the second mismatch makes correctable have one candidate each,
-	so each option's effect shows on its own reads."""
-	return _run(index, design, ["--bc-error-threshold", "2", "--bc-probability-threshold", "0.45"])
+def two_error_run(index, design):
+	return _run(index, design, ["--bc-error-threshold", "2"])
+
+
+@pytest.fixture(scope="module")
+def low_probability_run(index, design):
+	return _run(index, design, ["--bc-probability-threshold", "0.45"])
 
 
 def _lines(run):
@@ -318,37 +319,37 @@ def test_output_mappings_not_in_whitelist(design, keep_run):
 		assert _barcode_at(keep_run, reads[name]) == reads[name].barcode.replace("N", "A")
 
 
-def test_relaxed_run_follows_correction_rule(design, relaxed_run):
-	"""With --bc-error-threshold 2 --bc-probability-threshold 0.45 every
-	fragment line follows the correction rule at those settings."""
-	want = hd.expected_fragments(design.records, design.whitelist, max_errors=2, min_probability=0.45)
-	assert _lines(relaxed_run) == want
-
-
-def test_bc_error_threshold_two(design, relaxed_run):
+def test_bc_error_threshold_two(design, two_error_run):
 	"""--bc-error-threshold 2 corrects barcodes two mismatches from one
 	whitelist barcode (two substitutions, two Ns, an N and a substitution)
-	and still drops three substitutions and random barcodes."""
-	reads = relaxed_run.truth
+	and still drops three substitutions and random barcodes; every line
+	follows the rule with up to 2 mismatches. A barcode with two Ns has one
+	candidate, so it is corrected at the default probability 0.9 whatever
+	the whitelist bases under the Ns are."""
+	want = hd.expected_fragments(design.records, design.whitelist, max_errors=2)
+	assert _lines(two_error_run) == want
+	reads = two_error_run.truth
 	for cat in ("two", "n2", "n1sub", "one", "n1"):
 		for name in design.names[cat]:
-			assert _barcode_at(relaxed_run, reads[name]) == design.source[name], (cat, reads[name])
+			assert _barcode_at(two_error_run, reads[name]) == design.source[name], (cat, reads[name])
 	for name in design.names["three"] + design.names["far"]:
-		assert _barcode_at(relaxed_run, reads[name]) is None
+		assert _barcode_at(two_error_run, reads[name]) is None
 
 
-def test_bc_probability_threshold(design, relaxed_run):
+def test_bc_probability_threshold(design, low_probability_run):
 	"""--bc-probability-threshold 0.45 corrects the designs whose best
 	candidate has probability 0.895 (low_clamp, high_clamp, three_way) to
 	candidate a, and the 0.5 tie to the candidate whose mismatch lies later in
 	the barcode (candidates are ordered by score, then position: BarcodeWithQual,
-	src/utils.h)."""
-	reads = relaxed_run.truth
+	src/utils.h); every line follows the rule at 0.45."""
+	want = hd.expected_fragments(design.records, design.whitelist, min_probability=0.45)
+	assert _lines(low_probability_run) == want
+	reads = low_probability_run.truth
 	for label in ("low_clamp", "high_clamp", "three_way", "abundance", "quality"):
 		name, cands = design.designs[label]
-		assert _barcode_at(relaxed_run, reads[name]) == cands[0], label
+		assert _barcode_at(low_probability_run, reads[name]) == cands[0], label
 	name, cands = design.designs["tie"]
-	assert _barcode_at(relaxed_run, reads[name]) == cands[1]
+	assert _barcode_at(low_probability_run, reads[name]) == cands[1]
 
 
 # ------------------------------------------------------------ 5% check
