@@ -88,10 +88,13 @@ def end(rec):
 
 
 def tn5_shift(rec):
-	"""A copy of `rec` with the Tn5 shift applied (chromap.1 --Tn5-shift):
-	single-end + records move right by 4, - records lose 5 bases at their
-	end; fragments start 4 later and end 5 earlier (read 1's + mate loses 4
-	bases, the - mate 5). SAM records are not shifted (documented)."""
+	"""A copy of `rec` with the Tn5 shift applied (chromap.1 --Tn5-shift:
+	forward start positions +4, reverse end positions -5): single-end +
+	records start 4 later and keep their length, so their end moves by 4 as
+	well (chromap.1 names only the start; this part pins the current
+	behaviour), - records lose 5 bases at their end; fragments start 4 later
+	and end 5 earlier (read 1's + mate loses 4 bases, the - mate 5). SAM
+	records are not shifted (documented)."""
 	r = dict(rec)
 	kind = r["kind"]
 	if kind == "sam":

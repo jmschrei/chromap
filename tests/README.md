@@ -17,8 +17,17 @@ SAM parser.
 python3 -m pytest -q tests                            # builds chromap from src/ into a cache first
 CHROMAP_BIN=$PWD/chromap python3 -m pytest -q tests   # use a chromap already built (e.g. by `make`)
 CHROMAP_TEST_THREADS=4 python3 -m pytest -q tests     # -t for every chromap run (default 1)
-python3 -m pytest -q tests -m "not lowmem"            # skip the 12 GB --low-mem runs on small machines
+python3 -m pytest -q tests -m "not lowmem"            # skip the four 12 GB --low-mem runs on small machines
+python3 -m pytest -q tests -m "not cpp"               # only the command-line tests (no C++ drivers built)
 python3 -m pytest -q tests/test_c_*.py                # one area
+```
+
+To test a modified copy of the sources (a mutant, another branch's `src/`)
+with this checkout's tests, build that copy and point both layers at it:
+
+```bash
+make -f Makefile src_dir=/path/to/copy/src objs_dir=/tmp/m/objs exec=/tmp/m/chromap -j8
+CHROMAP_BIN=/tmp/m/chromap CHROMAP_TEST_SRC_DIR=/path/to/copy/src python3 -m pytest -q tests
 ```
 
 ### How the binary and the C++ drivers are built
@@ -31,10 +40,14 @@ python3 -m pytest -q tests/test_c_*.py                # one area
   exec=<cache>/chromap`), into a cache directory keyed by a hash of `src/`,
   the Makefile and the toolchain: a source change always rebuilds, an
   unchanged tree never does, and nothing is written into the repository.
-- The C++ drivers are always compiled from this checkout: every `src/*.cc`
-  except `chromap_driver.cc` (which holds `main` and takes ~15 s) is compiled
-  once into the cache, and each `tests/cpp/<name>.cc` is linked against those
-  objects with the Makefile's link line plus `-I src -I tests/cpp`.
+- The C++ drivers are compiled from this checkout's `src/`, or from
+  `$CHROMAP_TEST_SRC_DIR` when it is set: every `.cc` there except
+  `chromap_driver.cc` (which holds `main` and takes ~15 s) is compiled once
+  into the cache, and each `tests/cpp/<name>.cc` is linked against those
+  objects with the Makefile's link line plus `-I <src> -I tests/cpp`.
+  `CHROMAP_TEST_SRC_DIR` also sets the sources of the cached chromap build
+  (when `CHROMAP_BIN` is unset) and of the version `test_d_cli.py` expects;
+  the compiler flags still come from this checkout's Makefile.
 - The compiler and flags are the Makefile's: `make` prints its `CXX`,
   `CXXFLAGS` and `LDFLAGS`, with `CHROMAP_TEST_CXX`, `CHROMAP_TEST_CXXFLAGS`
   and `CHROMAP_TEST_LDFLAGS` passed on make's command line when set, exactly
@@ -44,6 +57,7 @@ python3 -m pytest -q tests/test_c_*.py                # one area
 | Variable | Default | Meaning |
 |---|---|---|
 | `CHROMAP_BIN` | unset | chromap binary for the CLI tests |
+| `CHROMAP_TEST_SRC_DIR` | `<checkout>/src` | sources the C++ drivers (and a cached chromap build) are compiled from |
 | `CHROMAP_TEST_THREADS` | 1 | `-t` (and `OMP_NUM_THREADS`) of every run that does not set `threads=`; 1 to 8 |
 | `CHROMAP_TEST_BUILD_DIR` | `<tempdir>/chromap-tests-<user>` | build cache |
 | `CHROMAP_TEST_BUILD_JOBS` | 4 | parallel compile jobs |
@@ -59,17 +73,41 @@ CHROMAP_BIN=$PWD/chromap CHROMAP_TEST_CXX=clang++ python3 -m pytest -q tests
 # macOS: also CHROMAP_TEST_CXXFLAGS="<the CXXFLAGS given to make>" CHROMAP_TEST_LDFLAGS="<the LDFLAGS>"
 ```
 
+A clang++ that is not the system compiler is passed the same way. The checks
+below used clang++ 18 from a conda-forge environment (`clangxx`, `llvm-openmp`)
+against the system's GCC 13 libstdc++, with the environment's libomp on the
+link line and in the binary's rpath (the C++ drivers and the cached chromap
+build both take these values):
+
+```bash
+CLANG=<env>/bin/clang++ LIB=<env>/lib
+CHROMAP_TEST_CXX="$CLANG --no-default-config --gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13" \
+CHROMAP_TEST_LDFLAGS="-lm -lz -L$LIB -Wl,-rpath,$LIB" python3 -m pytest -q tests
+```
+
+`--no-default-config` keeps the environment's clang configuration file from
+adding its own sysroot and flags; `--gcc-install-dir` picks the C++ standard
+library. clang/libomp builds undercount chromap's per-thread statistics on
+stderr at `-t` > 1 (known bug a-mapping-statistics-clang-threads), so tests
+assert those counters only on runs pinned to `threads=1`.
+
 ### Checked configurations
 
-At chromap 949043c on Linux x86-64, with `LC_ALL=C`: g++ 13.3 and g++ 11.5
-(Makefile flags), clang++ 18.1 with LLVM's libomp (conda-forge, against the
-system libstdc++); Python 3.8.20, 3.13 and 3.14 with pytest 8.3; with and
-without samtools and pysam (their two tests skip). macOS was not run.
+At chromap 949043c on Linux x86-64: g++ 13.3 (the Makefile's flags) at
+`CHROMAP_TEST_THREADS` 1 and 4, also with `LC_ALL=C` and under CPU
+contention (8 cores shared with 16 busy processes); g++ 11.5; clang++ 18.1
+with LLVM's libomp (conda-forge, against the system libstdc++, see above) at
+1 and 4 threads; Python 3.8.20 and 3.13 with pytest 8.3; with and without
+samtools and pysam (their two tests skip without them); `CHROMAP_BIN` set
+and unset. The harness and pilot tests also ran on Python 3.14. macOS was not
+run.
 
 ## Runtime and memory
 
-The pilot suite (27 tests) takes about 5 s at `CHROMAP_TEST_THREADS=1` and
-at 4 with a warm build cache; a cold cache adds about 20 s of compiling.
+The whole suite (about 430 tests) takes about 50 s at
+`CHROMAP_TEST_THREADS=1` and at 4 with a warm build cache, about 13 s of it
+the four `lowmem` tests; a cold cache adds about 25 s of compiling at the
+default 4 build jobs. Areas C and D alone (232 tests) take about 22 s.
 Costs at 949043c that shape how tests are written:
 
 | Step | Wall time | Peak memory |
@@ -89,9 +127,11 @@ buffers totalling 10 GB (BED, TagAlign) or 1 GB (SAM, pairs, PAF), sized with
 `resize` and so constructed record by record
 (`ProcessAndOutputMappingsInLowMemory`). Tests that use BED or
 TagAlign with `--low-mem` carry `@pytest.mark.lowmem`, so a small machine can
-deselect them; keep them few. The whole suite should stay well under a
-minute at `CHROMAP_TEST_THREADS=4`: share runs (module-scoped fixtures,
-`shared=True`) and give each run many designed reads.
+deselect them; keep them few (four at this writing, two in area B and two
+in area C). The whole suite should stay about a minute at
+`CHROMAP_TEST_THREADS=4`, since every search iteration runs it: share runs
+(module-scoped fixtures, `shared=True`) and give each run many designed
+reads.
 
 Keep pytest's base temporary directory on a local disk (the default,
 `/tmp/pytest-of-$USER`); chromap runs in its run directory.
@@ -99,15 +139,23 @@ Keep pytest's base temporary directory on a local disk (the default,
 ## Known bugs are kept out of the suite
 
 Every test asserts behaviour that follows from the simulated truth, from
-chromap's documentation (README.md, chromap.1, `chromap -h`) or from a value
-worked by hand. Where chromap 949043c gets a case wrong, the test is not in
-the suite; it is kept, with a note, outside the repository (the search's
-`known-bugs/` directory) to be reported upstream. So far: paired-end `--PAF`
-mate coordinates, single-end `--chr-order`, and `--low-mem` keeping a
-different duplicate than the default mode. The neighbouring correct cases
-(single-end PAF, paired-end `--chr-order`, duplicate groups and counts) stay
-in the suite. A test that pins output nothing documents says "pins the
-current output" in its docstring.
+chromap's documentation (README.md, chromap.1, `chromap -h`), from the
+intent its code states (comments naming a rule) or from a value worked by
+hand. Where chromap 949043c gets a case wrong, the test is not in the suite;
+it is kept, with a note, outside the repository (the search's `known-bugs/`
+directory, one `<slug>.md` and `test_<slug>.py` each) to be reported
+upstream. The neighbouring correct cases stay in the suite, and
+TARGETS.md names each kept-out case in its row. At this writing:
+
+| Area | Notes |
+|---|---|
+| A | a-sam-fasta-reads, a-truncated-gzip-input, a-lowercase-read-sam-nm-md, a-mapping-statistics-clang-threads |
+| B | b-contig-end-reads, b-error-threshold-16, b-error-threshold-shortcut |
+| C | paired-paf-coordinates, low-mem-dedup-representative, c-bulk-level-dedup-in-memory, c-low-mem-bulk-dedup-summary, c-low-mem-bulk-dedup-without-whitelist, c-allocate-without-multimappers, c-single-end-tn5-dedup-order, c-summary-duplicate-cap, c-sam-single-end-bulk-dedup, c-paf-residue-matches, r2-bulk-dedup-barcode-count |
+| D | single-end-chr-order, d-read-format-strand-on-reads, d-bc-threshold2-n, d-option-file-handling, d-mapq-threshold-300, d-version-stdout, d-feature-matrix |
+
+A test that pins output nothing documents says "pins the current output" in
+its docstring.
 
 ## Files
 
@@ -122,7 +170,10 @@ current output" in its docstring.
 | `test_pilot_cli.py` | pilot of the CLI layer: single-end truth, paired-end fragments, Tn5 shift, SAM fields, thread equality |
 | `test_pilot_unit.py`, `cpp/pilot.cc` | pilot of the C++ layer: hand-worked CT_TESTs, the minimizer generator against its definition through a probe |
 | `TARGETS.md` | every public name and option, its area and the tests covering it |
-| `test_<area>_*.py`, `cpp/<area>_*.cc`, `helpers_<area>.py` | areas A-D (TARGETS.md) |
+| `test_a_*.py`, `cpp/a_*.cc`, `helpers_a.py` | area A: index build and load, minimizers, seed encoding, `SequenceBatch`, read input files |
+| `test_b_*.py`, `cpp/b_*.cc`, `helpers_b.py` | area B: candidates, draft mappings, alignment, MAPQ, pairing, split alignment, the candidate cache, presets, thread equivalence |
+| `test_c_*.py`, `cpp/c_*.cc`, `helpers_c.py` | area C: output records and writers, sorting, deduplication, Tn5 shift, `--low-mem`, multi-mapping allocation, the summary |
+| `test_d_*.py`, `cpp/d_*.cc`, `helpers_d.py` | area D: barcodes and whitelist correction, `--read-format`, `--barcode-translate`, pairs output, `--chr-order`, the feature matrix, the command-line front end |
 
 ## The synthetic genome
 
@@ -179,7 +230,7 @@ def test_example(index, sim):
   - `check=True` raises `ChromapError` (an `AssertionError` with argv and stderr) on a non-zero exit; use `check=False` and `run.returncode` for error paths.
   - `shared=True` returns the earlier run of an identical request (same index, reads, arguments, threads, writing options) from this session; treat it as read-only.
 - `build_index(genome, outdir=None, k=None, w=None, extra_args=(), fasta=None, name="index", check=True)` -> `ChromapIndex(path, genome, fasta, k, w, args, returncode, stderr)`; prefer `index_factory`.
-- `run_cli(args, cwd=None, threads=None)` -> `ChromapRun`: chromap with exactly `args`, never raises; for help, version and error paths.
+- `run_cli(args, cwd=None, threads=None, timeout=None, no_core_dump=False)` -> `ChromapRun`: chromap with exactly `args`, never raises; for help, version and error paths. `no_core_dump=True` runs the child with `RLIMIT_CORE` 1 on Linux (0 elsewhere, a no-op without the `resource` module), so a command line that makes chromap abort (cxxopts throwing) does not wait about a second for the system's crash handler.
 - `ChromapRun`: `outdir`, `argv`, `returncode`, `stdout`, `stderr`, `output` (Path of `-o`), `reads`, `truth` (name -> `SimRead`/`SimPair`), `path(name)`, `exists(name)`, `text()`, `lines()`, `bed()`, `fragments()`, `tagalign()`, `sam()`, `pairs()`, `paf()`, `summary(name="summary.csv")`, `stats()` (integer statistics from stderr).
 
 ### Simulating reads
@@ -242,8 +293,11 @@ Mark the module `pytestmark = pytest.mark.cpp`.
   are reached through a test subclass with `using` declarations; no
   `#define private public`.
 - Every signature a driver calls becomes part of what the search must keep
-  compiling (test files are off limits to it), so call the stable public
-  entry points listed in TARGETS.md and avoid incidental helpers.
+  compiling: a search iteration may edit `tests/cpp/*.cc` only to follow a
+  signature it changed, never an input, an expected value or an assertion.
+  Call the stable public entry points listed in TARGETS.md, avoid incidental
+  helpers, and check what the caller sees rather than how the function gets
+  there (no order a later sort erases, no wording of a diagnostic line).
 - `ExitWithMessage` ends the process with status 255; test such paths
   through a probe and its exit code: `cpp(name).run(["--probe", "x", ...])`
   returns the `CompletedProcess` (`returncode`, `stdout`, `stderr` as bytes)
@@ -267,6 +321,17 @@ Mark the module `pytestmark = pytest.mark.cpp`.
 - Choose reads whose truth is unambiguous: `unique_locus`/`se_reads`/`pairs`
   for unique reads, planted segments for multimappers, substitutions placed
   so enough error-free 17-mers remain to seed the read.
+- stderr: assert the statistics chromap reports ("Number of reads",
+  "Number of mapped reads", "Number of output mappings (passed filters)",
+  "Number of barcodes in whitelist", ...), error and warning messages, and
+  the parameter report the driver prints before mapping; never timing
+  lines, progress lines, or the counts chromap prints between pipeline
+  steps ("After removing PCR duplications, ...", "Allocated N
+  multi-mappings in ...", "# shifted mappings"), which a faster pipeline may
+  print differently or not at all. Per-thread statistics only at
+  `threads=1` (see the clang note above).
+- Temp files: check that the run directory holds only what the test expects
+  afterwards, never a temp file's name or how many there were.
 - Python 3.8 syntax, standard library only; indent with tabs.
 - Tick the rows you cover in `TARGETS.md`.
 
@@ -306,7 +371,11 @@ Observed at 949043c; the line numbers move, the behaviour should not.
   column is the group size, capped at 255. MAPQ filtering applies to the
   record kept for each group, after deduplication. `--low-mem` and the
   default mode form the same groups but may keep a different record (known
-  bug note); assert only on identical duplicates or on counts.
+  bug note); assert only on identical duplicates or on counts. Bulk-level
+  removal (single-cell data with `--low-mem`) writes each group with the
+  barcode that has the most pairs in it, ties broken by the barcode's
+  abundance (exact whitelist matches in the input); chromap counts at most
+  two pairs per barcode there (known bug r2-bulk-dedup-barcode-count).
 - **Presets.** `atac` and `chip` turn on `--low-mem` (12 GB per run, see
   Runtime); `hic` writes pairs and turns on split alignment.
 - **Names.** Read names are cut at the first whitespace; a `/1` or `/2`

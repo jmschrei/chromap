@@ -137,8 +137,9 @@ def cap_design(genome):
 
 def test_tagalign_tn5_and_count_cap(index, cap_design):
 	"""Single-end --TagAlign has the 7 BED columns. With --Tn5-shift a +
-	read's interval moves right by 4 and a - read's end moves left by 5
-	(chromap.1). With --remove-pcr-duplicates groups of 300 and 256
+	read's start moves right by 4 and a - read's end left by 5 (chromap.1);
+	a + read keeps its length, so its end moves by 4 too (pins the current
+	behaviour). With --remove-pcr-duplicates groups of 300 and 256
 	identical reads are written once with the count capped at 255. No + and
 	- read share a start before or after shifting here, so the groups are
 	the same whichever comes first."""
