@@ -532,6 +532,26 @@ def test_paired_end_correction_and_cell_level_dedup(pe_design, pe_run):
 	assert sorted(n for n in want.values() if n > 1) == [3] * 6
 
 
+@pytest.fixture(scope="module")
+def pe_keep_run(index, pe_design):
+	reads, wl, path = pe_design
+	return ch.run_chromap(index, reads, ["--barcode-whitelist", str(path), "--remove-pcr-duplicates",
+		"--remove-pcr-duplicates-at-cell-level", "--output-mappings-not-in-whitelist", "--cache-size", "2000000"],
+		shared=True)
+
+
+def test_paired_end_output_mappings_not_in_whitelist(pe_design, pe_keep_run):
+	"""Paired-end --output-mappings-not-in-whitelist also writes the pairs
+	whose barcodes cannot be corrected, with the barcode as read; they are
+	deduplicated like the others (a fragment read with an exact barcode and
+	with a two-substitution one gives two lines)."""
+	reads, wl, _ = pe_design
+	want = hd.expected_fragments(reads, wl, keep_uncorrectable=True)
+	got = collections.Counter((f.chrom, f.start, f.end, f.barcode, f.dups) for f in pe_keep_run.fragments())
+	assert got == collections.Counter(k + (n,) for k, n in want.items())
+	assert sum(want.values()) == len(reads)
+
+
 def test_paired_end_barcode_statistics(pe_design, pe_run):
 	"""Paired-end runs count each pair's barcode once in "Number of barcodes
 	in whitelist" and "Number of corrected barcodes"."""
