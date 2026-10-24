@@ -110,12 +110,12 @@ def seed_sequence(barcode):
 	return ch.decode_seed(ch.encode_seed(barcode), len(barcode))
 
 
-def expected_fragments(records, whitelist, max_errors=1, min_probability=0.9, keep_uncorrectable=False,
-		interval=None):
-	"""Counter of (contig, start, end, barcode) fragment lines chromap should
-	write for barcoded records (SimRead or SimPair) with a whitelist, without
-	deduplication. `interval(record)` gives (contig, start, end); default the
-	read's interval (single-end) or the fragment (paired-end)."""
+def expected_fragments(records, whitelist, max_errors=1, min_probability=0.9, keep_uncorrectable=False):
+	"""Counter of (contig, start, end, barcode) -> number of barcoded records
+	(SimRead: the read's interval; SimPair: the fragment) chromap should
+	write with a whitelist: each line once per record without deduplication,
+	or one line with that count as its duplicate count with cell-level
+	deduplication."""
 	recs = list(records)
 	ab = whitelist_abundance([r.barcode for r in recs], whitelist)
 	out = collections.Counter()
@@ -126,13 +126,7 @@ def expected_fragments(records, whitelist, max_errors=1, min_probability=0.9, ke
 			if not keep_uncorrectable:
 				continue
 			bc = seed_sequence(r.barcode)
-		if interval is not None:
-			c, s, e = interval(r)
-		elif r.paired:
-			c, s, e = r.contig, r.start, r.end
-		else:
-			c, s, e = r.contig, r.start, r.end
-		out[(c, s, e, bc)] += 1
+		out[(r.contig, r.start, r.end, bc)] += 1
 	return out
 
 

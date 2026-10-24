@@ -49,7 +49,8 @@ class Design(object):
 def build_design(genome):
 	"""Categories (counts): exact (72: 3 per base whitelist barcode), one (40:
 	one substitution), two (24), three (10), n1 (22: one N, quality '#' there),
-	n2 (10: two Ns), n1sub (10: an N and a substitution before it), far (8:
+	n2 (10: two Ns, half over an A of the whitelist barcode at the second),
+	n1sub (10: an N and a substitution before it), far (8:
 	random barcodes at least 4 from every whitelist barcode), and designed
 	ambiguous reads, each one substitution away from two or three whitelist
 	barcodes of its own (helpers_d.isolated_barcodes keeps the designs 5 or
@@ -139,14 +140,14 @@ def build_design(genome):
 		q[p] = "#"
 		add("n1", hd.with_n(w, [p]), "".join(q), w)
 	for i in range(10):
-		# Two Ns where the whitelist base under the first N is not A, and an
-		# N with a substitution before it: the cases --bc-error-threshold 2
-		# handles correctly (see known bug d-bc-threshold2-n).
+		# Two Ns where the whitelist base under the first N is not A (half
+		# of them with an A under the second), and an N with a substitution
+		# before it: the cases --bc-error-threshold 2 handles correctly (see
+		# known bug d-bc-threshold2-n).
 		w = base[(i * 3 + 1) % len(base)]
-		while True:
-			ps = sorted(rng.sample(range(BC_LEN), 2))
-			if w[ps[0]] != "A":
-				break
+		pairs = [(a, b) for a in range(BC_LEN) for b in range(a + 1, BC_LEN)
+			if w[a] != "A" and (w[b] == "A") == (i % 2 == 0)]
+		ps = list(rng.choice(pairs))
 		q = list(quals())
 		for p in ps:
 			q[p] = "#"
