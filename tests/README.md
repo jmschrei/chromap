@@ -33,8 +33,8 @@ CHROMAP_BIN=/tmp/m/chromap CHROMAP_TEST_SRC_DIR=/path/to/copy/src python3 -m pyt
 ### How the binary and the C++ drivers are built
 
 - `CHROMAP_BIN` set: the CLI tests use that file as is (it must be an
-  executable). This is how the search's gate runs the suite: it builds
-  chromap once per commit with `make` and points `CHROMAP_BIN` at it.
+  executable). Use it when chromap is already built, for example by `make`
+  in a CI job, so that the suite does not build it again.
 - Otherwise the suite builds chromap from this checkout with the Makefile
   itself (`make -f Makefile src_dir=src objs_dir=<cache>/objs
   exec=<cache>/chromap`), into a cache directory keyed by a hash of `src/`,
@@ -99,7 +99,7 @@ runs at 4, one of them under CPU contention: 8 cores shared with 16 busy
 processes); g++ 11.5 at 4; clang++ 18.1 with LLVM's libomp (conda-forge,
 against the system libstdc++, see above) at 1 and 4; Python 3.8.20 (pytest
 8.3.5, without pysam: its test skips) and 3.13 at 4; `CHROMAP_BIN` pointing at
-a binary built once with `make`, as the search's gate runs it, at 4. The
+a binary built once with `make`, at 4. The
 harness and pilot tests also ran on Python 3.14 and without samtools and
 pysam. macOS was not run.
 
@@ -107,8 +107,7 @@ pysam. macOS was not run.
 
 The whole suite (432 tests) took 85 to 96 s at `CHROMAP_TEST_THREADS=1`
 and at 4 with a warm build cache on a shared 256-core server under other
-load (the same suite before the area A/B review took 74 s under that load
-and 47 s on a quieter machine); about 13 s of it are the four `lowmem` tests
+load; about 13 s of it are the four `lowmem` tests
 and about 5 s the three cache runs of `test_b_cache.py`. A cold cache adds
 about 25 s of compiling at the default 4 build jobs. Areas C and D alone
 (232 tests) take about 22 s.
@@ -134,7 +133,7 @@ buffers totalling 10 GB (BED, TagAlign) or 1 GB (SAM, pairs, PAF), sized with
 TagAlign with `--low-mem` carry `@pytest.mark.lowmem`, so a small machine can
 deselect them; keep them few (four at this writing, two in area B and two
 in area C). The whole suite should stay about a minute at
-`CHROMAP_TEST_THREADS=4`, since every search iteration runs it: share runs
+`CHROMAP_TEST_THREADS=4`, so that it can run on every change: share runs
 (module-scoped fixtures, `shared=True`) and give each run many designed
 reads.
 
@@ -168,10 +167,10 @@ Every test asserts behaviour that follows from the simulated truth, from
 chromap's documentation (README.md, chromap.1, `chromap -h`), from the
 intent its code states (comments naming a rule) or from a value worked by
 hand. Where chromap 949043c gets a case wrong, the test is not in the suite;
-it is kept, with a note, outside the repository (the search's `known-bugs/`
-directory, one `<slug>.md` and `test_<slug>.py` each) to be reported
-upstream. The neighbouring correct cases stay in the suite, and
-TARGETS.md names each kept-out case in its row. At this writing:
+the case is left out, to be reported as a GitHub issue with its
+reproduction. The neighbouring correct cases stay in the suite, and
+TARGETS.md names each kept-out case in its row by the short names below.
+At this writing:
 
 | Area | Notes |
 |---|---|
@@ -318,9 +317,9 @@ Mark the module `pytestmark = pytest.mark.cpp`.
 - Use only public members. Protected members (`MappingMetadata`'s vectors)
   are reached through a test subclass with `using` declarations; no
   `#define private public`.
-- Every signature a driver calls becomes part of what the search must keep
-  compiling: a search iteration may edit `tests/cpp/*.cc` only to follow a
-  signature it changed, never an input, an expected value or an assertion.
+- Every signature a driver calls becomes part of what a change to `src/`
+  must keep compiling: such a change may edit `tests/cpp/*.cc` only to follow
+  a signature it changed, never an input, an expected value or an assertion.
   Call the stable public entry points listed in TARGETS.md, avoid incidental
   helpers, and check what the caller sees rather than how the function gets
   there (no order a later sort erases, no wording of a diagnostic line).
@@ -337,9 +336,9 @@ Mark the module `pytestmark = pytest.mark.cpp`.
   that only records chromap's current output says "pins the current output";
   keep those rare. Checking only that chromap exits 0 is not coverage.
 - When chromap's behaviour is wrong (it contradicts its documentation, the
-  truth, or itself across modes), leave the test out, add it with a short
-  note to the search's `known-bugs/` directory, and keep the neighbouring
-  correct cases in the suite.
+  truth, or itself across modes), leave the test out, report the case as a
+  GitHub issue with its reproduction, and keep the neighbouring correct cases
+  in the suite.
 - Use `sim` for reads, the session `index`, and `index_factory` for other k,
   w or genomes. Keep each test to a few chromap runs; share a module-scoped
   run between tests that only read it; respect the per-area run budget in
